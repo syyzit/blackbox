@@ -19,8 +19,14 @@ import (
 
 	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
+	"github.com/spacecr8ed/blackbox/internal/policy"
 	"github.com/spacecr8ed/blackbox/internal/redact"
 )
+
+// Ledger detects tool definitions that changed since they were last seen.
+type Ledger interface {
+	Observe(server, tool, hash string) bool
+}
 
 // Options configures a proxied run.
 type Options struct {
@@ -41,9 +47,21 @@ type Options struct {
 	// Redactor strips secrets from recorded payloads. Nil means no redaction.
 	Redactor *redact.Redactor
 	// PriceInPerMTok and PriceOutPerMTok convert reported token usage into USD.
-	// Zero leaves cost at zero; MCP does not define billing by itself.
 	PriceInPerMTok  float64
 	PriceOutPerMTok float64
+
+	// Policy gates tool calls. Nil records without enforcing.
+	Policy *policy.Policy
+	// Server is the human-readable server command used by policy matching.
+	Server string
+	// ServerKey is the stable fingerprint used by the tool-definition ledger.
+	ServerKey string
+	// Ledger tracks tool definitions across sessions.
+	Ledger Ledger
+	// Approver asks a human about require_approval calls.
+	Approver policy.Approver
+	// Audit persists policy decisions.
+	Audit policy.Auditor
 }
 
 // RunStdio proxies an MCP stdio server until the child exits.
@@ -75,7 +93,20 @@ func RunStdio(ctx context.Context, o Options) error {
 		return fmt.Errorf("proxy: start %q: %w", o.Argv[0], err)
 	}
 
-	p := newPipeline(o.SessionID, o.Sink, o.Redactor, o.PriceInPerMTok, o.PriceOutPerMTok)
+	p := newPipeline(pipelineConfig{
+		SessionID: o.SessionID,
+		Sink:      o.Sink,
+		Redactor:  o.Redactor,
+		PriceIn:   o.PriceInPerMTok,
+		PriceOut:  o.PriceOutPerMTok,
+		AgentOut:  o.Stdout,
+		Policy:    o.Policy,
+		Server:    o.Server,
+		ServerKey: o.ServerKey,
+		Ledger:    o.Ledger,
+		Approver:  o.Approver,
+		Audit:     o.Audit,
+	})
 
 	// Agent -> server. Closes the child's stdin on EOF so a piped run terminates.
 	c2sErr := make(chan error, 1)
@@ -114,6 +145,21 @@ type call struct {
 	at     time.Time
 }
 
+type pipelineConfig struct {
+	SessionID string
+	Sink      event.Sink
+	Redactor  *redact.Redactor
+	PriceIn   float64
+	PriceOut  float64
+	AgentOut  io.Writer
+	Policy    *policy.Policy
+	Server    string
+	ServerKey string
+	Ledger    Ledger
+	Approver  policy.Approver
+	Audit     policy.Auditor
+}
+
 type pipeline struct {
 	sessionID string
 	sink      event.Sink
@@ -122,17 +168,36 @@ type pipeline struct {
 	priceIn   float64
 	priceOut  float64
 
+	agentOut    io.Writer
+	writeMu     sync.Mutex
+	policy      *policy.Policy
+	server      string
+	serverKey   string
+	ledger      Ledger
+	approver    policy.Approver
+	audit       policy.Auditor
+	rugPulled   map[string]bool
+	rugPulledMu sync.Mutex
+
 	mu      sync.Mutex
 	pending map[string]call
 }
 
-func newPipeline(sessionID string, sink event.Sink, red *redact.Redactor, priceIn, priceOut float64) *pipeline {
+func newPipeline(c pipelineConfig) *pipeline {
 	return &pipeline{
-		sessionID: sessionID,
-		sink:      sink,
-		red:       red,
-		priceIn:   priceIn,
-		priceOut:  priceOut,
+		sessionID: c.SessionID,
+		sink:      c.Sink,
+		red:       c.Redactor,
+		priceIn:   c.PriceIn,
+		priceOut:  c.PriceOut,
+		agentOut:  c.AgentOut,
+		policy:    c.Policy,
+		server:    c.Server,
+		serverKey: c.ServerKey,
+		ledger:    c.Ledger,
+		approver:  c.Approver,
+		audit:     c.Audit,
+		rugPulled: map[string]bool{},
 		pending:   make(map[string]call),
 	}
 }
@@ -142,10 +207,31 @@ func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error
 	for {
 		line, readErr := br.ReadBytes('\n')
 		if len(line) > 0 {
-			if _, writeErr := dst.Write(line); writeErr != nil {
-				return writeErr
+			if dir == event.ClientToServer {
+				msg, dec, blocked := p.gate(line)
+				if blocked {
+					p.record(dir, line, routeHint{}, dec, false)
+					resp := syntheticError(msg, dec.Reason)
+					if p.agentOut != nil {
+						if err := p.write(p.agentOut, append(resp, '\n')); err != nil {
+							return err
+						}
+					}
+					p.record(event.ServerToClient, resp, routeHint{}, dec, true)
+				} else {
+					// Record before forwarding so a decision that depends on this frame
+					// (a rug-pull discovered in tools/list) is visible to the next call.
+					p.record(dir, line, routeHint{}, dec, false)
+					if err := p.write(dst, line); err != nil {
+						return err
+					}
+				}
+			} else {
+				p.record(dir, line, routeHint{}, nil, false)
+				if err := p.write(dst, line); err != nil {
+					return err
+				}
 			}
-			p.record(dir, line, routeHint{})
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
@@ -154,6 +240,75 @@ func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error
 			return readErr
 		}
 	}
+}
+
+// write forwards a frame, serialized so a synthetic block response can never
+// interleave with a server response mid-frame.
+func (p *pipeline) write(dst io.Writer, line []byte) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	_, err := dst.Write(line)
+	return err
+}
+
+// gate evaluates policy for a client frame. A nil decision means "not evaluated".
+func (p *pipeline) gate(line []byte) (*jsonrpc.Message, *policy.Decision, bool) {
+	msg, err := jsonrpc.Decode(line)
+	if err != nil || msg.Method != "tools/call" || p.policy == nil {
+		return msg, nil, false
+	}
+	dec, blocked := p.evaluate(msg)
+	return msg, &dec, blocked
+}
+
+func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
+	req := policy.Request{Server: p.server, Tool: msg.ToolName(), Args: string(msg.Params)}
+	dec := p.policy.Decide(req)
+
+	if dec.Action == policy.Allow && p.isRugPulled(req.Tool) {
+		dec = policy.Decision{
+			Action: policy.Deny,
+			Rule:   -1,
+			Reason: "tool definition changed since it was last approved",
+		}
+	}
+
+	approved := false
+	if dec.Action == policy.RequireApproval {
+		if p.approver != nil {
+			approved = p.approver.Approve(policy.ApprovalRequest{
+				Server: p.server, Tool: req.Tool, Args: req.Args, Reason: dec.Reason,
+			})
+		}
+		if approved {
+			dec.Action = policy.Allow
+			dec.Reason += " (approved by user)"
+		} else {
+			dec.Action = policy.Deny
+			dec.Reason += " (not approved)"
+		}
+	}
+
+	if p.audit != nil {
+		_ = p.audit.Record(policy.DecisionRecord{
+			Server: p.server, Tool: req.Tool, Args: req.Args,
+			Action: dec.Action, Approved: approved, Reason: dec.Reason,
+			At: time.Now().UTC(),
+		})
+	}
+	return dec, dec.Action == policy.Deny
+}
+
+func (p *pipeline) isRugPulled(tool string) bool {
+	p.rugPulledMu.Lock()
+	defer p.rugPulledMu.Unlock()
+	return p.rugPulled[tool]
+}
+
+func (p *pipeline) markRugPulled(tool string) {
+	p.rugPulledMu.Lock()
+	defer p.rugPulledMu.Unlock()
+	p.rugPulled[tool] = true
 }
 
 // routeHint carries transport-level routing (Mcp-Method / Mcp-Name headers) that is
@@ -165,7 +320,7 @@ type routeHint struct {
 
 // record indexes a copy of the frame. Errors are deliberately swallowed: a broken
 // recorder must never stall or kill the agent it is observing.
-func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint) {
+func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec *policy.Decision, synthetic bool) {
 	raw := trimEOL(line)
 	e := event.Event{
 		SessionID: p.sessionID,
@@ -174,6 +329,14 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint) {
 		Direction: dir,
 		Raw:       p.red.String(string(raw)),
 		Size:      len(raw),
+		Synthetic: synthetic,
+	}
+	if dec != nil {
+		e.Decision = string(dec.Action)
+		e.DecisionReason = dec.Reason
+		if dec.Action == policy.Deny {
+			e.Status = event.StatusDenied
+		}
 	}
 
 	msg, err := jsonrpc.Decode(raw)
@@ -201,7 +364,9 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint) {
 		e.Method = method
 		e.Tool = tool
 		e.ID = msg.IDString()
-		e.Status = event.StatusPending
+		if e.Status == "" {
+			e.Status = event.StatusPending
+		}
 		e.Args = p.red.String(compact(msg.Params))
 
 		p.mu.Lock()
@@ -229,7 +394,9 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint) {
 		}
 
 		if msg.Error != nil {
-			e.Status = event.StatusError
+			if e.Status == "" {
+				e.Status = event.StatusError
+			}
 			e.Error = p.red.String(msg.Error.Error())
 			break
 		}
@@ -244,22 +411,29 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint) {
 			e.CostUSD = float64(usage.InputTokens)/1e6*p.priceIn + float64(usage.OutputTokens)/1e6*p.priceOut
 		}
 
-		switch {
-		case isToolError:
-			e.Status = event.StatusToolError
-		case resultType == "input_required":
-			e.Status = event.StatusInputRequired
-		default:
-			e.Status = event.StatusOK
+		if e.Status == "" {
+			switch {
+			case isToolError:
+				e.Status = event.StatusToolError
+			case resultType == "input_required":
+				e.Status = event.StatusInputRequired
+			default:
+				e.Status = event.StatusOK
+			}
 		}
 
 		if e.Method == "tools/list" {
 			if defs, err := jsonrpc.ParseTools(msg.Result); err == nil {
 				for _, d := range defs {
-					e.ToolDefs = append(e.ToolDefs, event.ToolDef{
-						Name: d.Name,
-						Hash: HashTool(d),
-					})
+					hash := HashTool(d)
+					changed := false
+					if p.ledger != nil {
+						changed = p.ledger.Observe(p.serverKey, d.Name, hash)
+					}
+					if changed && (p.policy == nil || p.policy.RugPullBlock) {
+						p.markRugPulled(d.Name)
+					}
+					e.ToolDefs = append(e.ToolDefs, event.ToolDef{Name: d.Name, Hash: hash, Changed: changed})
 				}
 			}
 		}
@@ -288,6 +462,22 @@ func HashTool(d jsonrpc.ToolDefinition) string {
 	}{d.Name, d.Description, schema})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+func syntheticError(msg *jsonrpc.Message, reason string) []byte {
+	var id json.RawMessage = []byte("null")
+	if msg != nil && len(msg.ID) > 0 {
+		id = msg.ID
+	}
+	b, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error": map[string]any{
+			"code":    4001,
+			"message": "blocked by blackbox policy: " + reason,
+		},
+	})
+	return b
 }
 
 func compact(raw json.RawMessage) string {

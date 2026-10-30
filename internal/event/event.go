@@ -19,6 +19,7 @@ const (
 	StatusToolError     = "tool_error"
 	StatusInputRequired = "input_required"
 	StatusNotify        = "notify"
+	StatusDenied        = "denied"
 )
 
 // ToolDef is a hashed tool definition observed in a tools/list response.
@@ -61,6 +62,11 @@ type Event struct {
 	Size int `json:"size,omitempty"`
 	// ToolDefs is populated on tools/list responses.
 	ToolDefs []ToolDef `json:"toolDefs,omitempty"`
+	// Decision and DecisionReason are set when a policy gate evaluated the frame.
+	Decision       string `json:"decision,omitempty"`
+	DecisionReason string `json:"decisionReason,omitempty"`
+	// Synthetic marks a frame Black Box produced itself, such as a block notice.
+	Synthetic bool `json:"synthetic,omitempty"`
 	// UsageIn/UsageOut are token counts reported by the server, when present.
 	UsageIn  int `json:"usageIn,omitempty"`
 	UsageOut int `json:"usageOut,omitempty"`

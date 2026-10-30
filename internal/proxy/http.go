@@ -15,6 +15,7 @@ import (
 
 	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
+	"github.com/spacecr8ed/blackbox/internal/policy"
 	"github.com/spacecr8ed/blackbox/internal/redact"
 )
 
@@ -31,6 +32,19 @@ type HTTPOptions struct {
 	// PriceInPerMTok and PriceOutPerMTok convert reported token usage into USD.
 	PriceInPerMTok  float64
 	PriceOutPerMTok float64
+
+	// Policy gates tool calls. Nil records without enforcing.
+	Policy *policy.Policy
+	// Server is the human-readable server identity used by policy matching.
+	Server string
+	// ServerKey is the stable fingerprint used by the tool-definition ledger.
+	ServerKey string
+	// Ledger tracks tool definitions across sessions.
+	Ledger Ledger
+	// Approver asks a human about require_approval calls.
+	Approver policy.Approver
+	// Audit persists policy decisions.
+	Audit policy.Auditor
 }
 
 // HTTP is a reverse proxy for MCP over streamable HTTP.
@@ -63,7 +77,19 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 				ResponseHeaderTimeout: 0, // tools may be slow; the caller controls the deadline
 			},
 		},
-		rec: newPipeline(o.SessionID, o.Sink, o.Redactor, o.PriceInPerMTok, o.PriceOutPerMTok),
+		rec: newPipeline(pipelineConfig{
+			SessionID: o.SessionID,
+			Sink:      o.Sink,
+			Redactor:  o.Redactor,
+			PriceIn:   o.PriceInPerMTok,
+			PriceOut:  o.PriceOutPerMTok,
+			Policy:    o.Policy,
+			Server:    o.Server,
+			ServerKey: o.ServerKey,
+			Ledger:    o.Ledger,
+			Approver:  o.Approver,
+			Audit:     o.Audit,
+		}),
 	}, nil
 }
 
@@ -78,8 +104,23 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body = bytes.TrimSpace(body)
 
 	method, name := routeFields(r.Header, body)
+
+	var dec *policy.Decision
+	if msg, err := jsonrpc.Decode(body); err == nil && msg.Method == "tools/call" && h.rec.policy != nil {
+		d, blocked := h.rec.evaluate(msg)
+		dec = &d
+		if blocked {
+			h.rec.record(event.ClientToServer, body, routeHint{method: method, name: name}, dec, false)
+			resp := syntheticError(msg, d.Reason)
+			h.rec.record(event.ServerToClient, resp, routeHint{}, dec, true)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(resp)
+			return
+		}
+	}
 	if len(body) > 0 {
-		h.rec.record(event.ClientToServer, body, routeHint{method: method, name: name})
+		h.rec.record(event.ClientToServer, body, routeHint{method: method, name: name}, dec, false)
 	}
 
 	target := *h.upstream
@@ -120,7 +161,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	h.rec.record(event.ServerToClient, bytes.TrimSpace(respBody), routeHint{})
+	h.rec.record(event.ServerToClient, bytes.TrimSpace(respBody), routeHint{}, nil, false)
 	_, _ = w.Write(respBody)
 }
 
@@ -134,7 +175,7 @@ func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader) {
 			if flusher != nil {
 				flusher.Flush()
 			}
-			h.rec.record(event.ServerToClient, bytes.TrimSpace(line), routeHint{})
+			h.rec.record(event.ServerToClient, bytes.TrimSpace(line), routeHint{}, nil, false)
 		}
 		if err != nil {
 			return

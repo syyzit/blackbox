@@ -1,0 +1,25 @@
+{
+  "$comment": "Copy to ~/.blackbox/policy.json. First matching rule wins.",
+  "default": "allow",
+  "rugPullBlock": true,
+  "rules": [
+    {
+      "server": "*filesystem*",
+      "tool": "write_*",
+      "action": "require_approval",
+      "reason": "writes change your files"
+    },
+    {
+      "tool": "*",
+      "args": "\"path\"\\s*:\\s*\"/etc/",
+      "action": "deny",
+      "reason": "system paths are off limits"
+    },
+    {
+      "server": "*",
+      "tool": "shell",
+      "action": "deny",
+      "reason": "no shell access"
+    }
+  ]
+}

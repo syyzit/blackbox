@@ -1,79 +1,101 @@
 package store
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/spacecr8ed/blackbox/internal/policy"
 )
 
-func TestLedgerFlagsChangedToolDefinitions(t *testing.T) {
-	home := t.TempDir()
-	argv := []string{"fake-server", "--root", "/tmp"}
+func TestLedgerDetectsChangedDefinitionsAcrossRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tooldefs.json")
+	server := ServerKey([]string{"fake-server", "--root", "/tmp"})
 
-	first, err := Open(home, argv)
+	l := LoadLedger(path)
+	if l.Observe(server, "read_file", "aaaaaaaaaaaaaaaa") {
+		t.Fatal("first observation must not be a change")
+	}
+	if !l.Observe(server, "read_file", "bbbbbbbbbbbbbbbb") {
+		t.Fatal("changed definition was not detected")
+	}
+	if l.Observe(server, "write_file", "cccccccccccccccc") {
+		t.Fatal("first observation of a new tool must not be a change")
+	}
+	if err := l.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh process sees the persisted state.
+	l2 := LoadLedger(path)
+	if !l2.Observe(server, "read_file", "dddddddddddddddd") {
+		t.Fatal("ledger did not persist across reloads")
+	}
+	if l2.Observe(server, "write_file", "cccccccccccccccc") {
+		t.Fatal("unchanged definition flagged after reload")
+	}
+}
+
+func TestToolDefChangesArePersisted(t *testing.T) {
+	home := t.TempDir()
+	sess, err := Open(home, []string{"srv"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = first.Emit(event.Event{
+	err = sess.Emit(event.Event{
 		Direction: event.ServerToClient,
 		Method:    "tools/list",
 		ToolDefs: []event.ToolDef{
-			{Name: "read_file", Hash: "aaaaaaaaaaaaaaaa"},
-			{Name: "write_file", Hash: "bbbbbbbbbbbbbbbb"},
+			{Name: "read_file", Hash: "aaaaaaaaaaaaaaaa", Changed: true},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Close(); err != nil {
+	id := sess.Meta.ID
+	if err := sess.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Same server, first tool's definition changed, second is new.
-	second, err := Open(home, argv)
+	_, events, err := Find(home, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
-
-	got := []event.ToolDef{
-		{Name: "read_file", Hash: "cccccccccccccccc"},
-		{Name: "write_file", Hash: "bbbbbbbbbbbbbbbb"},
-		{Name: "list_dir", Hash: "dddddddddddddddd"},
+	if len(events) != 1 || len(events[0].ToolDefs) != 1 || !events[0].ToolDefs[0].Changed {
+		t.Fatalf("changed flag was not persisted: %+v", events)
 	}
-	if err := second.Emit(event.Event{Direction: event.ServerToClient, Method: "tools/list", ToolDefs: got}); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	_, events, err := Find(home, second.Meta.ID)
+func TestPolicyDecisionsAreAudited(t *testing.T) {
+	home := t.TempDir()
+	sess, err := Open(home, []string{"srv"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	now := time.Now().UTC()
+	rec := policy.DecisionRecord{
+		Server: "srv", Tool: "write_file", Args: `{"path":"x"}`,
+		Action: policy.Deny, Approved: false, Reason: "writes need approval", At: now,
 	}
-	defs := events[0].ToolDefs
-	if len(defs) != 3 {
-		t.Fatalf("expected 3 defs, got %+v", defs)
+	if err := sess.Record(rec); err != nil {
+		t.Fatal(err)
 	}
-	byName := map[string]event.ToolDef{}
-	for _, d := range defs {
-		byName[d.Name] = d
-	}
-	if !byName["read_file"].Changed {
-		t.Fatalf("changed definition was not flagged: %+v", defs)
-	}
-	if byName["write_file"].Changed {
-		t.Fatalf("unchanged definition was flagged: %+v", defs)
-	}
-	if byName["list_dir"].Changed {
-		t.Fatalf("first-seen definition was flagged as changed: %+v", defs)
+	id := sess.Meta.ID
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(filepath.Join(home, "tooldefs.json")); err != nil {
-		t.Fatalf("ledger was not persisted: %v", err)
+	decisions, err := Decisions(home, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 decision, got %d", len(decisions))
+	}
+	got := decisions[0]
+	if got.SessionID != id || got.Tool != "write_file" || got.Action != policy.Deny || got.Reason == "" {
+		t.Fatalf("decision was not round-tripped: %+v", got)
 	}
 }
 

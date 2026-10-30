@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Black Box</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="name">BLACK BOX</span>
+    <span class="tag">flight recorder for agents</span>
+  </div>
+  <div class="actions">
+    <input id="filter" type="search" placeholder="filter method or tool" autocomplete="off" spellcheck="false">
+    <button id="diffBtn" class="btn" disabled>Diff with B</button>
+  </div>
+</header>
+
+<main>
+  <aside class="sessions">
+    <div class="pane-title">Sessions <span id="sessionCount" class="count"></span></div>
+    <div id="sessionList" class="session-list"></div>
+  </aside>
+
+  <section class="viewer">
+    <div class="session-head">
+      <div class="session-id">
+        <h1 id="title" class="mono">no session selected</h1>
+        <div id="subtitle" class="muted"></div>
+      </div>
+      <div id="stats" class="stats"></div>
+    </div>
+
+    <div class="scrub">
+      <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="timeline scrubber">
+      <span id="scrubLabel" class="mono muted">0 / 0</span>
+    </div>
+
+    <div class="timeline-wrap">
+      <table class="timeline">
+        <thead>
+          <tr>
+            <th class="w-seq">#</th>
+            <th class="w-time">t</th>
+            <th class="w-dir"></th>
+            <th class="w-status">status</th>
+            <th>method</th>
+            <th>tool</th>
+            <th class="w-ms">ms</th>
+          </tr>
+        </thead>
+        <tbody id="timeline"></tbody>
+      </table>
+      <div id="empty" class="empty hidden">No events recorded.</div>
+    </div>
+
+    <div class="detail">
+      <div class="tabs" id="tabs"></div>
+      <pre id="detailBody" class="mono"></pre>
+    </div>
+  </section>
+</main>
+
+<div id="diffModal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Run diff</h2>
+      <button id="closeDiff" class="btn ghost">close</button>
+    </div>
+    <div id="diffBody" class="modal-body"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

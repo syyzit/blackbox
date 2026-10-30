@@ -49,6 +49,15 @@ func (m *memSink) snapshot() []event.Event {
 
 func startProxied(t *testing.T, sink event.Sink, red *redact.Redactor, extraEnv ...string) (*mcptest.Client, chan error) {
 	t.Helper()
+	return startProxiedOpts(t, proxy.Options{
+		SessionID: "test-session",
+		Sink:      sink,
+		Redactor:  red,
+	}, extraEnv...)
+}
+
+func startProxiedOpts(t *testing.T, o proxy.Options, extraEnv ...string) (*mcptest.Client, chan error) {
+	t.Helper()
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -56,18 +65,16 @@ func startProxied(t *testing.T, sink event.Sink, red *redact.Redactor, extraEnv 
 	env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 	env = append(env, extraEnv...)
 
-	go func() {
-		errCh <- proxy.RunStdio(context.Background(), proxy.Options{
-			Argv:      []string{os.Args[0], "-test.run=TestHelperProcess"},
-			Env:       env,
-			Stdin:     inR,
-			Stdout:    outW,
-			Stderr:    os.Stderr,
-			SessionID: "test-session",
-			Sink:      sink,
-			Redactor:  red,
-		})
-	}()
+	o.Argv = []string{os.Args[0], "-test.run=TestHelperProcess"}
+	o.Env = env
+	o.Stdin = inR
+	o.Stdout = outW
+	o.Stderr = os.Stderr
+	if o.SessionID == "" {
+		o.SessionID = "test-session"
+	}
+
+	go func() { errCh <- proxy.RunStdio(context.Background(), o) }()
 
 	return mcptest.NewClient(inW, outR), errCh
 }

@@ -21,6 +21,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/spacecr8ed/blackbox/internal/policy"
 )
 
 // Meta describes a recorded session.
@@ -112,9 +113,6 @@ func (s *Session) Emit(e event.Event) error {
 
 	if len(e.ToolDefs) > 0 {
 		for i := range e.ToolDefs {
-			if s.ledger.Observe(s.Meta.ServerKey, e.ToolDefs[i].Name, e.ToolDefs[i].Hash) {
-				e.ToolDefs[i].Changed = true
-			}
 			if _, err := s.db.Exec(
 				`INSERT INTO tool_defs (session_id, name, hash, changed) VALUES (?, ?, ?, ?)
 				 ON CONFLICT(session_id, name) DO UPDATE SET hash = excluded.hash, changed = excluded.changed`,
@@ -123,7 +121,6 @@ func (s *Session) Emit(e event.Event) error {
 				return fmt.Errorf("store: insert tool def: %w", err)
 			}
 		}
-		_ = s.ledger.Save()
 	}
 
 	_, err := s.db.Exec(
@@ -139,6 +136,66 @@ func (s *Session) Emit(e event.Event) error {
 		return fmt.Errorf("store: insert event: %w", err)
 	}
 	return nil
+}
+
+// Ledger exposes the cross-session tool-definition ledger.
+func (s *Session) Ledger() *Ledger { return s.ledger }
+
+// Record persists a policy decision for the audit log.
+func (s *Session) Record(d policy.DecisionRecord) error {
+	at := d.At
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO policy_decisions (session_id, at, server, tool, args, action, approved, reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.Meta.ID, at.UnixMilli(), d.Server, d.Tool, d.Args, string(d.Action), boolInt(d.Approved), d.Reason,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record decision: %w", err)
+	}
+	return nil
+}
+
+// Decisions returns the audit log for a session.
+func Decisions(home, prefix string) ([]policy.DecisionRecord, error) {
+	db, err := openHomeDB(home)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	id, err := resolveID(db, prefix)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(
+		`SELECT at, server, tool, args, action, approved, reason
+		   FROM policy_decisions WHERE session_id = ? ORDER BY id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []policy.DecisionRecord{}
+	for rows.Next() {
+		var (
+			d        policy.DecisionRecord
+			at       int64
+			action   string
+			approved int
+		)
+		if err := rows.Scan(&at, &d.Server, &d.Tool, &d.Args, &action, &approved, &d.Reason); err != nil {
+			return nil, err
+		}
+		d.SessionID = id
+		d.At = time.UnixMilli(at).UTC()
+		d.Action = policy.Action(action)
+		d.Approved = approved != 0
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // Close releases the database handle.
@@ -441,6 +498,20 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_tool ON events(session_id, tool);
+
+CREATE TABLE IF NOT EXISTS policy_decisions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  at          INTEGER NOT NULL,
+  server      TEXT NOT NULL DEFAULT '',
+  tool        TEXT NOT NULL DEFAULT '',
+  args        TEXT NOT NULL DEFAULT '',
+  action      TEXT NOT NULL DEFAULT '',
+  approved    INTEGER NOT NULL DEFAULT 0,
+  reason      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_decisions_session ON policy_decisions(session_id);
 
 CREATE TABLE IF NOT EXISTS tool_defs (
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

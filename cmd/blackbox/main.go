@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -15,9 +16,12 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/spacecr8ed/blackbox/internal/policy"
 	"github.com/spacecr8ed/blackbox/internal/proxy"
 	"github.com/spacecr8ed/blackbox/internal/redact"
+	"github.com/spacecr8ed/blackbox/internal/replay"
 	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/spacecr8ed/blackbox/internal/ui"
 )
 
 const version = "0.1.0"
@@ -38,6 +42,14 @@ func run(args []string) int {
 		return cmdShow(args[1:])
 	case "stats":
 		return cmdStats(args[1:])
+	case "replay":
+		return cmdReplay(args[1:])
+	case "diff":
+		return cmdDiff(args[1:])
+	case "decisions":
+		return cmdDecisions(args[1:])
+	case "ui":
+		return cmdUI(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -69,6 +81,19 @@ Usage:
   blackbox stats [-home dir] <session-id|prefix>
         Print latency, error and cost aggregates for a session.
 
+  blackbox replay [-home dir] <session-id|prefix> [-- command...]
+        Answer an agent from a recorded session, then diff the new run against it.
+        With no command, list the recorded exchanges.
+
+  blackbox diff [-home dir] <session-a> <session-b>
+        Compare the tool-call sequences of two runs.
+
+  blackbox decisions [-home dir] <session-id|prefix>
+        Print the policy audit log for a session.
+
+  blackbox ui [-addr 127.0.0.1:8787] [-open]
+        Serve the session browser and timeline UI.
+
   blackbox http -upstream <url> [-addr 127.0.0.1:8787]
         Proxy a streamable-HTTP MCP server and record every request.
 
@@ -86,6 +111,7 @@ Examples:
 func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	home := fs.String("home", "", "data directory")
+	policyPath := fs.String("policy", "", "policy file (default: <home>/policy.json)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -94,6 +120,12 @@ func cmdRun(args []string) int {
 	if len(argv) == 0 {
 		fmt.Fprintln(os.Stderr, "blackbox run: missing command after --")
 		return 2
+	}
+
+	pol, err := loadPolicy(*home, *policyPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
 	}
 
 	sess, err := store.Open(*home, argv)
@@ -114,6 +146,12 @@ func cmdRun(args []string) int {
 		SessionID: sess.Meta.ID,
 		Sink:      sess,
 		Redactor:  redact.Default(),
+		Policy:    pol,
+		Server:    strings.Join(argv, " "),
+		ServerKey: sess.Meta.ServerKey,
+		Ledger:    sess.Ledger(),
+		Approver:  terminalApprover{},
+		Audit:     sess,
 	})
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -162,6 +200,7 @@ func cmdHTTP(args []string) int {
 	upstream := fs.String("upstream", "", "upstream MCP server base URL")
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	home := fs.String("home", "", "data directory")
+	policyPath := fs.String("policy", "", "policy file (default: <home>/policy.json)")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -169,6 +208,12 @@ func cmdHTTP(args []string) int {
 	if *upstream == "" {
 		fmt.Fprintln(os.Stderr, "blackbox http: -upstream is required")
 		return 2
+	}
+
+	pol, err := loadPolicy(*home, *policyPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
 	}
 
 	sess, err := store.Open(*home, []string{"http-proxy", *upstream})
@@ -189,12 +234,233 @@ func cmdHTTP(args []string) int {
 		SessionID: sess.Meta.ID,
 		Sink:      sess,
 		Redactor:  redact.Default(),
+		Policy:    pol,
+		Server:    *upstream,
+		ServerKey: sess.Meta.ServerKey,
+		Ledger:    sess.Ledger(),
+		Approver:  terminalApprover{},
+		Audit:     sess,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
 	}
 	return 0
+}
+
+func loadPolicy(home, path string) (*policy.Policy, error) {
+	if path == "" {
+		candidate := filepath.Join(store.Home(home), "policy.json")
+		if _, err := os.Stat(candidate); err == nil {
+			path = candidate
+		}
+	}
+	return policy.Load(path)
+}
+
+// terminalApprover asks on /dev/tty, never on the MCP stream, so the agent cannot
+// answer its own approval prompt.
+type terminalApprover struct{}
+
+func (terminalApprover) Approve(r policy.ApprovalRequest) bool {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "blackbox · %s needs approval but there is no terminal: denied\n", r.Tool)
+		return false
+	}
+	defer tty.Close()
+
+	args := r.Args
+	if len(args) > 240 {
+		args = args[:240] + "…"
+	}
+	fmt.Fprintf(tty, "\nblackbox · approval required\n  server  %s\n  tool    %s\n  args    %s\n  reason  %s\nallow? [y/N] ", r.Server, r.Tool, args, r.Reason)
+	line, err := bufio.NewReader(tty).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
+}
+
+func cmdDecisions(args []string) int {
+	fs := flag.NewFlagSet("decisions", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "blackbox decisions: missing session id")
+		return 2
+	}
+
+	recs, err := store.Decisions(*home, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	if len(recs) == 0 {
+		fmt.Println("no policy decisions recorded")
+		return 0
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tACTION\tAPPROVED\tTOOL\tREASON")
+	for _, d := range recs {
+		fmt.Fprintf(w, "%s\t%s\t%v\t%s\t%s\n",
+			d.At.Local().Format("15:04:05"), d.Action, d.Approved, dash(d.Tool), truncate(d.Reason, 48))
+	}
+	return flush(w)
+}
+
+func cmdUI(args []string) int {
+	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
+	openBrowser := fs.Bool("open", false, "open the browser")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	url := "http://" + *addr
+	if strings.HasPrefix(*addr, ":") {
+		url = "http://127.0.0.1" + *addr
+	}
+	fmt.Fprintf(os.Stderr, "blackbox · ui %s\n", url)
+	if *openBrowser {
+		_ = exec.Command("open", url).Start()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := ui.Serve(ctx, *home, *addr); err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	return 0
+}
+
+func cmdReplay(args []string) int {
+	fs := flag.NewFlagSet("replay", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "blackbox replay: missing session id")
+		return 2
+	}
+	id := rest[0]
+	var argv []string
+	if len(rest) > 1 {
+		if rest[1] == "--" {
+			argv = rest[2:]
+		} else {
+			argv = rest[1:]
+		}
+	}
+
+	meta, events, err := store.Find(*home, id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	eng := replay.New(events)
+
+	if len(argv) == 0 {
+		fmt.Printf("session %s · %d exchanges\n\n", meta.ID, len(eng.Exchanges()))
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "#\tMETHOD\tTOOL\tRECORDED\tARGS")
+		for i, x := range eng.Exchanges() {
+			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
+				i+1, dash(x.Request.Method), dash(x.Request.Tool),
+				dash(x.Response.Status), truncate(x.Request.Args, 64))
+		}
+		return flush(w)
+	}
+
+	sess, err := store.Open(*home, append([]string{"replay", meta.ID}, argv...))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	defer sess.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Fprintf(os.Stderr, "blackbox · replay %s · %d exchanges\n", meta.ID, len(eng.Exchanges()))
+	fmt.Fprintf(os.Stderr, "blackbox · new session %s\n", sess.Meta.ID)
+
+	err = replay.ServeStdio(ctx, eng, replay.Options{
+		Argv:      argv,
+		SessionID: sess.Meta.ID,
+		Sink:      sess,
+		Redactor:  redact.Default(),
+		Stderr:    os.Stderr,
+	})
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			fmt.Fprintln(os.Stderr, "blackbox:", err)
+			return 1
+		}
+	}
+
+	_ = sess.Close()
+	_, replayEvents, err := store.Find(*home, sess.Meta.ID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	report := replay.Diff(events, replayEvents)
+	printReport(report)
+	if !report.Identical {
+		return 1
+	}
+	return 0
+}
+
+func cmdDiff(args []string) int {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "blackbox diff: need two session ids")
+		return 2
+	}
+
+	_, a, err := store.Find(*home, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	_, b, err := store.Find(*home, fs.Arg(1))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+
+	printReport(replay.Diff(a, b))
+	return 0
+}
+
+func printReport(r replay.Report) {
+	if r.Identical {
+		fmt.Printf("identical · %d calls\n", r.CallsA)
+		return
+	}
+	fmt.Printf("diverged · %d -> %d calls · %d changes\n", r.CallsA, r.CallsB, len(r.Changes))
+	for _, c := range r.Changes {
+		fmt.Printf("  %-15s %-16s %-10s %s\n", c.Kind, dash(c.Method), dash(c.Tool), c.Detail)
+	}
 }
 
 func cmdStats(args []string) int {
