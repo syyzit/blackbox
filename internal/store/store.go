@@ -125,10 +125,10 @@ func (s *Session) Emit(e event.Event) error {
 
 	_, err := s.db.Exec(
 		`INSERT INTO events
-		 (session_id, seq, at, direction, method, tool, rpc_id, status, result_type,
+		 (session_id, seq, at, direction, method, tool, tool_hash, rpc_id, status, result_type,
 		  duration_ms, size, args, result, error, raw, usage_in, usage_out, cost_usd)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.SessionID, e.Seq, e.At.UnixMilli(), string(e.Direction), e.Method, e.Tool, e.ID,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.SessionID, e.Seq, e.At.UnixMilli(), string(e.Direction), e.Method, e.Tool, e.ToolHash, e.ID,
 		e.Status, e.ResultType, e.DurationMS, e.Size, e.Args, e.Result, e.Error, e.Raw,
 		e.UsageIn, e.UsageOut, e.CostUSD,
 	)
@@ -269,7 +269,7 @@ func Find(home, prefix string) (Meta, []event.Event, error) {
 
 func loadEvents(db *sql.DB, sessionID string) ([]event.Event, error) {
 	rows, err := db.Query(
-		`SELECT seq, at, direction, method, tool, rpc_id, status, result_type,
+		`SELECT seq, at, direction, method, tool, tool_hash, rpc_id, status, result_type,
 		        duration_ms, size, args, result, error, raw, usage_in, usage_out, cost_usd
 		   FROM events WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
@@ -286,7 +286,7 @@ func loadEvents(db *sql.DB, sessionID string) ([]event.Event, error) {
 			args, result, errText, raw sql.NullString
 		)
 		if err := rows.Scan(
-			&e.Seq, &at, &dir, &e.Method, &e.Tool, &e.ID, &e.Status, &e.ResultType,
+			&e.Seq, &at, &dir, &e.Method, &e.Tool, &e.ToolHash, &e.ID, &e.Status, &e.ResultType,
 			&e.DurationMS, &e.Size, &args, &result, &errText, &raw,
 			&e.UsageIn, &e.UsageOut, &e.CostUSD,
 		); err != nil {
@@ -482,6 +482,7 @@ CREATE TABLE IF NOT EXISTS events (
   direction    TEXT NOT NULL,
   method       TEXT NOT NULL DEFAULT '',
   tool         TEXT NOT NULL DEFAULT '',
+  tool_hash    TEXT NOT NULL DEFAULT '',
   rpc_id       TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT '',
   result_type  TEXT NOT NULL DEFAULT '',

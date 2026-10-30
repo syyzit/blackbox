@@ -246,6 +246,9 @@ func TestToolDefinitionsAreHashed(t *testing.T) {
 	if _, err := cli.Call("tools/list", map[string]any{}); err != nil {
 		t.Fatalf("tools/list: %v", err)
 	}
+	if _, err := cli.Call("tools/call", map[string]any{"name": "echo", "arguments": map[string]any{"text": "hash me"}}); err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
 	stop(t, cli, errCh)
 
 	for _, e := range sink.snapshot() {
@@ -260,7 +263,17 @@ func TestToolDefinitionsAreHashed(t *testing.T) {
 				t.Fatalf("tool %q has a bad hash: %q", d.Name, d.Hash)
 			}
 		}
-		return
+
+		// The subsequent call must be linked to the definition it ran under.
+		for _, call := range sink.snapshot() {
+			if call.Direction == event.ClientToServer && call.Tool == "echo" && call.Method == "tools/call" {
+				if call.ToolHash == "" {
+					t.Fatal("tool call is missing its definition hash")
+				}
+				return
+			}
+		}
+		t.Fatal("echo call was not recorded")
 	}
 	t.Fatal("no tool definitions were hashed")
 }

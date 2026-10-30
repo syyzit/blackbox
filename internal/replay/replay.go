@@ -242,8 +242,10 @@ func (r *recorder) add(dir event.Direction, raw []byte, method, tool string) eve
 		}
 		ev.ID = msg.IDString()
 		ev.Args = r.red.String(compact(msg.Params))
-		ev.Status = event.StatusPending
-		if msg.IsResponse() {
+		switch {
+		case msg.IsNotification():
+			ev.Status = event.StatusNotify
+		case msg.IsResponse():
 			ev.Status = event.StatusOK
 			if msg.Error != nil {
 				ev.Status = event.StatusError
@@ -253,6 +255,8 @@ func (r *recorder) add(dir event.Direction, raw []byte, method, tool string) eve
 				ev.Status = event.StatusToolError
 			}
 			ev.Result = r.red.String(compact(msg.Result))
+		default:
+			ev.Status = event.StatusPending
 		}
 	}
 	r.emit(ev)

@@ -1,14 +1,16 @@
-// Command demoagent is a tiny MCP client used by the demo.
+// Command demoagent is a tiny scriptable MCP client used by the demos.
 //
-// With no arguments it talks to its own stdin/stdout, which is how Black Box drives
-// it during replay. With arguments it spawns that command and records through it.
+// It talks to its own stdin/stdout by default, which is how Black Box drives it during
+// replay, or spawns a command given after "--".
 package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spacecr8ed/blackbox/internal/mcptest"
 )
@@ -17,13 +19,47 @@ type nopCloser struct{ io.Writer }
 
 func (nopCloser) Close() error { return nil }
 
+type step struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+func defaultSteps() []step {
+	return []step{
+		{Method: "tools/list", Params: json.RawMessage(`{}`)},
+		{Method: "tools/call", Params: json.RawMessage(`{"name":"echo","arguments":{"text":"hello from the agent"}}`)},
+		{Method: "tools/call", Params: json.RawMessage(`{"name":"add","arguments":{"a":2,"b":40}}`)},
+	}
+}
+
 func main() {
+	stepsPath := flag.String("steps", "", "JSON file with a list of {method, params}")
+	flag.Parse()
+
+	steps := defaultSteps()
+	if *stepsPath != "" {
+		b, err := os.ReadFile(*stepsPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "demoagent:", err)
+			os.Exit(1)
+		}
+		if err := json.Unmarshal(b, &steps); err != nil {
+			fmt.Fprintln(os.Stderr, "demoagent:", err)
+			os.Exit(1)
+		}
+	}
+
+	argv := flag.Args()
+	for len(argv) > 0 && argv[0] == "--" {
+		argv = argv[1:]
+	}
+
 	var (
 		cli *mcptest.Client
 		err error
 	)
-	if len(os.Args) > 1 {
-		cli, err = mcptest.Start(os.Args[1:]...)
+	if len(argv) > 0 {
+		cli, err = mcptest.Start(argv...)
 	} else {
 		cli = mcptest.NewClient(nopCloser{os.Stdout}, os.Stdin)
 	}
@@ -32,23 +68,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	steps := []struct {
-		method string
-		params map[string]any
-	}{
-		{"tools/list", map[string]any{}},
-		{"tools/call", map[string]any{"name": "echo", "arguments": map[string]any{"text": "hello from the agent"}}},
-		{"tools/call", map[string]any{"name": "add", "arguments": map[string]any{"a": 2, "b": 40}}},
-	}
+	for _, s := range steps {
+		if strings.HasPrefix(s.Method, "notifications/") {
+			if err := cli.Notify(s.Method, json.RawMessage(s.Params)); err != nil {
+				fmt.Fprintln(os.Stderr, "demoagent:", err)
+				os.Exit(1)
+			}
+			continue
+		}
 
-	for _, step := range steps {
-		res, err := cli.Call(step.method, step.params)
+		res, err := cli.Call(s.Method, json.RawMessage(s.Params))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "demoagent:", err)
 			os.Exit(1)
 		}
-		summary := summarize(res)
-		fmt.Fprintf(os.Stderr, "agent · %-10s %s\n", step.method, summary)
+		fmt.Fprintf(os.Stderr, "agent · %-24s %s\n", s.Method, summarize(res))
 	}
 
 	_ = cli.Close()
@@ -66,6 +100,9 @@ func summarize(raw json.RawMessage) string {
 		names := make([]string, 0, len(v.Tools))
 		for _, t := range v.Tools {
 			names = append(names, t.Name)
+		}
+		if len(names) > 6 {
+			names = append(names[:6], "…")
 		}
 		return fmt.Sprintf("%d tools: %v", len(v.Tools), names)
 	}

@@ -15,7 +15,7 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 - **Transparent MCP proxy** over stdio and streamable HTTP, byte-exact, with recording
   on the side.
 - **Normalized evidence**: method, tool, args, result, error, status, latency, size,
-  token usage, and cost per call.
+  token usage, cost, and the tool-definition hash each call ran under.
 - **SQLite store** (pure Go, WAL, indexed) with per-session and per-tool aggregation.
 - **Secret redaction** applied before persistence and rendering, never to the live stream.
 - **Tool-definition hashing** that flags a definition changed after approval (rug-pull).
@@ -149,9 +149,11 @@ three MCP-specific attack patterns, live in [`docs/protocol-notes.md`](docs/prot
 
 ```sh
 make build   # bin/blackbox, bin/fakeserver, bin/demoagent
+./scripts/install.sh "$HOME/.local/bin"
 make test    # go test ./...
 make vet     # go vet ./...
-make demo    # the full tour
+make demo    # the full tour against the bundled server
+./scripts/demo-real.sh   # the same tour through the real filesystem MCP server
 ```
 
 CI runs `go vet` and `go test` on every push.

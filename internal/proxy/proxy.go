@@ -178,6 +178,8 @@ type pipeline struct {
 	audit       policy.Auditor
 	rugPulled   map[string]bool
 	rugPulledMu sync.Mutex
+	toolHashes  map[string]string
+	toolHashMu  sync.Mutex
 
 	mu      sync.Mutex
 	pending map[string]call
@@ -185,20 +187,21 @@ type pipeline struct {
 
 func newPipeline(c pipelineConfig) *pipeline {
 	return &pipeline{
-		sessionID: c.SessionID,
-		sink:      c.Sink,
-		red:       c.Redactor,
-		priceIn:   c.PriceIn,
-		priceOut:  c.PriceOut,
-		agentOut:  c.AgentOut,
-		policy:    c.Policy,
-		server:    c.Server,
-		serverKey: c.ServerKey,
-		ledger:    c.Ledger,
-		approver:  c.Approver,
-		audit:     c.Audit,
-		rugPulled: map[string]bool{},
-		pending:   make(map[string]call),
+		sessionID:  c.SessionID,
+		sink:       c.Sink,
+		red:        c.Redactor,
+		priceIn:    c.PriceIn,
+		priceOut:   c.PriceOut,
+		agentOut:   c.AgentOut,
+		policy:     c.Policy,
+		server:     c.Server,
+		serverKey:  c.ServerKey,
+		ledger:     c.Ledger,
+		approver:   c.Approver,
+		audit:      c.Audit,
+		rugPulled:  map[string]bool{},
+		toolHashes: map[string]string{},
+		pending:    make(map[string]call),
 	}
 }
 
@@ -305,6 +308,18 @@ func (p *pipeline) isRugPulled(tool string) bool {
 	return p.rugPulled[tool]
 }
 
+func (p *pipeline) setToolHash(tool, hash string) {
+	p.toolHashMu.Lock()
+	defer p.toolHashMu.Unlock()
+	p.toolHashes[tool] = hash
+}
+
+func (p *pipeline) toolHash(tool string) string {
+	p.toolHashMu.Lock()
+	defer p.toolHashMu.Unlock()
+	return p.toolHashes[tool]
+}
+
 func (p *pipeline) markRugPulled(tool string) {
 	p.rugPulledMu.Lock()
 	defer p.rugPulledMu.Unlock()
@@ -368,6 +383,9 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			e.Status = event.StatusPending
 		}
 		e.Args = p.red.String(compact(msg.Params))
+		if e.Method == "tools/call" && e.Tool != "" {
+			e.ToolHash = p.toolHash(e.Tool)
+		}
 
 		p.mu.Lock()
 		p.pending[e.ID] = call{method: e.Method, tool: e.Tool, at: e.At}
@@ -434,6 +452,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 						p.markRugPulled(d.Name)
 					}
 					e.ToolDefs = append(e.ToolDefs, event.ToolDef{Name: d.Name, Hash: hash, Changed: changed})
+					p.setToolHash(d.Name, hash)
 				}
 			}
 		}

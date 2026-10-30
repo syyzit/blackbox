@@ -62,6 +62,8 @@ type Event struct {
 	Size int `json:"size,omitempty"`
 	// ToolDefs is populated on tools/list responses.
 	ToolDefs []ToolDef `json:"toolDefs,omitempty"`
+	// ToolHash is the definition hash in force when this call was made.
+	ToolHash string `json:"toolHash,omitempty"`
 	// Decision and DecisionReason are set when a policy gate evaluated the frame.
 	Decision       string `json:"decision,omitempty"`
 	DecisionReason string `json:"decisionReason,omitempty"`
