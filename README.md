@@ -11,16 +11,19 @@ Local-first, single binary, no cloud, no account.
 
 ## Status
 
-Phase 0 of the build. Working today:
+Phase 1 of the build, plus the SQLite store. Working today:
 
 - transparent MCP **stdio** proxy, byte-exact, with recording on the side
-- normalized event log (JSONL) per session under `~/.blackbox`
-- `blackbox run`, `sessions`, `show`
+- **streamable HTTP** reverse proxy with `Mcp-Method` / `Mcp-Name` header routing
+- normalized events: args, result, error, status, latency, size, token usage, cost
+- secret redaction applied to the recording, never to the live stream
+- tool-definition hashing with cross-session **rug-pull** flagging
+- **SQLite** session store (pure Go, WAL) with per-session aggregation
+- `blackbox run`, `http`, `sessions`, `show`, `stats`
 - fake MCP server + client harness for integration tests
-- protocol notes for the stateless MCP `2026-07-28` revision
 
-Coming next: SQLite store, HTTP transport, timeline UI, deterministic replay and run
-diffs, and a policy gate with rug-pull detection. See [Roadmap](#roadmap).
+Coming next: web UI, deterministic replay, run diff, and the policy gate. See
+[Roadmap](#roadmap).
 
 ## Quick start
 
@@ -70,14 +73,14 @@ three MCP-specific attack patterns we plan to catch, live in
 
 - [x] Transparent stdio proxy with byte-exact passthrough
 - [x] Per-session event log and CLI timeline
-- [ ] SQLite event store with latency and cost aggregation
-- [ ] Streamable HTTP transport with `Mcp-Method` / `Mcp-Name` header routing
-- [ ] Secret redaction on persist and render
+- [x] SQLite event store with latency and cost aggregation
+- [x] Streamable HTTP transport with `Mcp-Method` / `Mcp-Name` header routing
+- [x] Secret redaction on persist and render
+- [x] Rug-pull detection via tool-definition hashing
 - [ ] Web UI: session list, scrubbable timeline, frame inspector
 - [ ] Deterministic replay against recorded responses
 - [ ] Run diff: what changed between two executions of the same task
 - [ ] Policy gate: allow / deny / require-approval per tool
-- [ ] Rug-pull detection via tool-definition hashing
 - [ ] Single-binary packaging with the UI embedded
 
 ## Development

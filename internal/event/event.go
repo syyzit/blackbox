@@ -61,6 +61,11 @@ type Event struct {
 	Size int `json:"size,omitempty"`
 	// ToolDefs is populated on tools/list responses.
 	ToolDefs []ToolDef `json:"toolDefs,omitempty"`
+	// UsageIn/UsageOut are token counts reported by the server, when present.
+	UsageIn  int `json:"usageIn,omitempty"`
+	UsageOut int `json:"usageOut,omitempty"`
+	// CostUSD is derived from usage and the configured price table.
+	CostUSD float64 `json:"costUsd,omitempty"`
 }
 
 // Sink receives events as they are recorded.

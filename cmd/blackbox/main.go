@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -35,6 +36,8 @@ func run(args []string) int {
 		return cmdSessions(args[1:])
 	case "show":
 		return cmdShow(args[1:])
+	case "stats":
+		return cmdStats(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -62,6 +65,9 @@ Usage:
 
   blackbox show [-home dir] <session-id|prefix>
         Print the recorded timeline for a session.
+
+  blackbox stats [-home dir] <session-id|prefix>
+        Print latency, error and cost aggregates for a session.
 
   blackbox http -upstream <url> [-addr 127.0.0.1:8787]
         Proxy a streamable-HTTP MCP server and record every request.
@@ -98,7 +104,7 @@ func cmdRun(args []string) int {
 	defer sess.Close()
 
 	fmt.Fprintf(os.Stderr, "blackbox · session %s\n", sess.Meta.ID)
-	fmt.Fprintf(os.Stderr, "blackbox · recording to %s\n", sess.Dir)
+	fmt.Fprintf(os.Stderr, "blackbox · recording to %s\n", filepath.Join(sess.Home, "blackbox.db"))
 
 	err = proxy.RunStdio(context.Background(), proxy.Options{
 		Argv:      argv,
@@ -187,6 +193,41 @@ func cmdHTTP(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
+	}
+	return 0
+}
+
+func cmdStats(args []string) int {
+	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "blackbox stats: missing session id")
+		return 2
+	}
+
+	stats, err := store.StatsFor(*home, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+
+	fmt.Printf("calls    %d\n", stats.Calls)
+	fmt.Printf("errors   %d\n", stats.Errors)
+	fmt.Printf("latency  total %dms · avg %.1fms · max %dms\n", stats.TotalMS, stats.AvgMS, stats.MaxMS)
+	fmt.Printf("bytes    %d\n", stats.Bytes)
+	fmt.Printf("cost     $%.4f\n", stats.CostUSD)
+	if len(stats.Tools) > 0 {
+		fmt.Println()
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "TOOL\tCALLS\tERRORS\tAVG\tMAX")
+		for _, t := range stats.Tools {
+			fmt.Fprintf(w, "%s\t%d\t%d\t%.1fms\t%dms\n", t.Tool, t.Calls, t.Errors, t.AvgMS, t.MaxMS)
+		}
+		return flush(w)
 	}
 	return 0
 }

@@ -28,6 +28,9 @@ type HTTPOptions struct {
 	Sink event.Sink
 	// Redactor strips secrets from recorded payloads. Nil means no redaction.
 	Redactor *redact.Redactor
+	// PriceInPerMTok and PriceOutPerMTok convert reported token usage into USD.
+	PriceInPerMTok  float64
+	PriceOutPerMTok float64
 }
 
 // HTTP is a reverse proxy for MCP over streamable HTTP.
@@ -60,7 +63,7 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 				ResponseHeaderTimeout: 0, // tools may be slow; the caller controls the deadline
 			},
 		},
-		rec: newPipeline(o.SessionID, o.Sink, o.Redactor),
+		rec: newPipeline(o.SessionID, o.Sink, o.Redactor, o.PriceInPerMTok, o.PriceOutPerMTok),
 	}, nil
 }
 

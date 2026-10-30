@@ -97,6 +97,54 @@ func ParseResult(result json.RawMessage) (resultType string, isError bool) {
 	return r.ResultType, r.IsError
 }
 
+// Usage is token accounting reported by an MCP server, when it reports any.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+// ParseUsage extracts token usage from a tool result. MCP itself does not define
+// billing, so this looks for the common shapes: a top-level "usage" object, or one
+// under _meta.
+func ParseUsage(result json.RawMessage) Usage {
+	type tokens struct {
+		InputTokens      int `json:"input_tokens"`
+		OutputTokens     int `json:"output_tokens"`
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	}
+	var r struct {
+		Usage *tokens                    `json:"usage"`
+		Meta  map[string]json.RawMessage `json:"_meta"`
+	}
+	if err := json.Unmarshal(result, &r); err != nil {
+		return Usage{}
+	}
+	pick := func(t *tokens) Usage {
+		if t == nil {
+			return Usage{}
+		}
+		in, out := t.InputTokens, t.OutputTokens
+		if in == 0 {
+			in = t.PromptTokens
+		}
+		if out == 0 {
+			out = t.CompletionTokens
+		}
+		return Usage{InputTokens: in, OutputTokens: out}
+	}
+	if u := pick(r.Usage); u.InputTokens != 0 || u.OutputTokens != 0 {
+		return u
+	}
+	if raw, ok := r.Meta["io.modelcontextprotocol/usage"]; ok {
+		var t tokens
+		if err := json.Unmarshal(raw, &t); err == nil {
+			return pick(&t)
+		}
+	}
+	return Usage{}
+}
+
 // ToolName extracts params.name for tools/call frames.
 func (m *Message) ToolName() string {
 	if m.Method != "tools/call" || len(m.Params) == 0 {

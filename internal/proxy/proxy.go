@@ -40,6 +40,10 @@ type Options struct {
 	Sink event.Sink
 	// Redactor strips secrets from recorded payloads. Nil means no redaction.
 	Redactor *redact.Redactor
+	// PriceInPerMTok and PriceOutPerMTok convert reported token usage into USD.
+	// Zero leaves cost at zero; MCP does not define billing by itself.
+	PriceInPerMTok  float64
+	PriceOutPerMTok float64
 }
 
 // RunStdio proxies an MCP stdio server until the child exits.
@@ -71,7 +75,7 @@ func RunStdio(ctx context.Context, o Options) error {
 		return fmt.Errorf("proxy: start %q: %w", o.Argv[0], err)
 	}
 
-	p := newPipeline(o.SessionID, o.Sink, o.Redactor)
+	p := newPipeline(o.SessionID, o.Sink, o.Redactor, o.PriceInPerMTok, o.PriceOutPerMTok)
 
 	// Agent -> server. Closes the child's stdin on EOF so a piped run terminates.
 	c2sErr := make(chan error, 1)
@@ -115,16 +119,20 @@ type pipeline struct {
 	sink      event.Sink
 	red       *redact.Redactor
 	seq       atomic.Int64
+	priceIn   float64
+	priceOut  float64
 
 	mu      sync.Mutex
 	pending map[string]call
 }
 
-func newPipeline(sessionID string, sink event.Sink, red *redact.Redactor) *pipeline {
+func newPipeline(sessionID string, sink event.Sink, red *redact.Redactor, priceIn, priceOut float64) *pipeline {
 	return &pipeline{
 		sessionID: sessionID,
 		sink:      sink,
 		red:       red,
+		priceIn:   priceIn,
+		priceOut:  priceOut,
 		pending:   make(map[string]call),
 	}
 }
@@ -229,6 +237,13 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint) {
 		resultType, isToolError := jsonrpc.ParseResult(msg.Result)
 		e.ResultType = resultType
 		e.Result = p.red.String(compact(msg.Result))
+
+		usage := jsonrpc.ParseUsage(msg.Result)
+		e.UsageIn, e.UsageOut = usage.InputTokens, usage.OutputTokens
+		if p.priceIn != 0 || p.priceOut != 0 {
+			e.CostUSD = float64(usage.InputTokens)/1e6*p.priceIn + float64(usage.OutputTokens)/1e6*p.priceOut
+		}
+
 		switch {
 		case isToolError:
 			e.Status = event.StatusToolError

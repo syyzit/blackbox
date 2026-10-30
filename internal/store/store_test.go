@@ -18,6 +18,7 @@ func TestLedgerFlagsChangedToolDefinitions(t *testing.T) {
 	}
 	err = first.Emit(event.Event{
 		Direction: event.ServerToClient,
+		Method:    "tools/list",
 		ToolDefs: []event.ToolDef{
 			{Name: "read_file", Hash: "aaaaaaaaaaaaaaaa"},
 			{Name: "write_file", Hash: "bbbbbbbbbbbbbbbb"},
@@ -42,7 +43,7 @@ func TestLedgerFlagsChangedToolDefinitions(t *testing.T) {
 		{Name: "write_file", Hash: "bbbbbbbbbbbbbbbb"},
 		{Name: "list_dir", Hash: "dddddddddddddddd"},
 	}
-	if err := second.Emit(event.Event{Direction: event.ServerToClient, ToolDefs: got}); err != nil {
+	if err := second.Emit(event.Event{Direction: event.ServerToClient, Method: "tools/list", ToolDefs: got}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,14 +58,18 @@ func TestLedgerFlagsChangedToolDefinitions(t *testing.T) {
 	if len(defs) != 3 {
 		t.Fatalf("expected 3 defs, got %+v", defs)
 	}
-	if !defs[0].Changed {
-		t.Fatalf("changed definition was not flagged: %+v", defs[0])
+	byName := map[string]event.ToolDef{}
+	for _, d := range defs {
+		byName[d.Name] = d
 	}
-	if defs[1].Changed {
-		t.Fatalf("unchanged definition was flagged: %+v", defs[1])
+	if !byName["read_file"].Changed {
+		t.Fatalf("changed definition was not flagged: %+v", defs)
 	}
-	if defs[2].Changed {
-		t.Fatalf("first-seen definition was flagged as changed: %+v", defs[2])
+	if byName["write_file"].Changed {
+		t.Fatalf("unchanged definition was flagged: %+v", defs)
+	}
+	if byName["list_dir"].Changed {
+		t.Fatalf("first-seen definition was flagged as changed: %+v", defs)
 	}
 
 	if _, err := os.Stat(filepath.Join(home, "tooldefs.json")); err != nil {
