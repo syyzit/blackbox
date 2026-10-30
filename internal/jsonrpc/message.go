@@ -65,6 +65,38 @@ func (m *Message) IDString() string {
 	return string(m.ID)
 }
 
+// ToolDefinition is a tool as advertised by a server.
+type ToolDefinition struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+// ParseTools extracts tool definitions from a tools/list result.
+func ParseTools(result json.RawMessage) ([]ToolDefinition, error) {
+	var r struct {
+		Tools []ToolDefinition `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &r); err != nil {
+		return nil, err
+	}
+	return r.Tools, nil
+}
+
+// ParseResult reads resultType and the tool-level isError flag.
+// An absent resultType is treated as "complete" per the spec's compatibility rule.
+func ParseResult(result json.RawMessage) (resultType string, isError bool) {
+	var r struct {
+		ResultType string `json:"resultType"`
+		IsError    bool   `json:"isError"`
+	}
+	_ = json.Unmarshal(result, &r)
+	if r.ResultType == "" {
+		r.ResultType = "complete"
+	}
+	return r.ResultType, r.IsError
+}
+
 // ToolName extracts params.name for tools/call frames.
 func (m *Message) ToolName() string {
 	if m.Method != "tools/call" || len(m.Params) == 0 {

@@ -8,12 +8,14 @@ package store
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,9 +37,10 @@ type Session struct {
 	Meta Meta
 	Dir  string
 
-	mu  sync.Mutex
-	f   *os.File
-	seq int64
+	mu     sync.Mutex
+	f      *os.File
+	seq    int64
+	ledger *Ledger
 }
 
 // Home resolves the Black Box data directory.
@@ -81,7 +84,12 @@ func Open(home string, argv []string) (*Session, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &Session{Meta: meta, Dir: dir, f: f}, nil
+	return &Session{
+		Meta:   meta,
+		Dir:    dir,
+		f:      f,
+		ledger: LoadLedger(filepath.Join(home, "tooldefs.json")),
+	}, nil
 }
 
 func writeMeta(dir string, meta Meta) error {
@@ -108,12 +116,29 @@ func (s *Session) Emit(e event.Event) error {
 	}
 	e.SessionID = s.Meta.ID
 
+	if len(e.ToolDefs) > 0 && s.ledger != nil {
+		server := ServerKey(s.Meta.Argv)
+		for i := range e.ToolDefs {
+			if s.ledger.Observe(server, e.ToolDefs[i].Name, e.ToolDefs[i].Hash) {
+				e.ToolDefs[i].Changed = true
+			}
+		}
+		_ = s.ledger.Save()
+	}
+
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
 	_, err = s.f.Write(append(b, '\n'))
 	return err
+}
+
+// ServerKey fingerprints a server command so its tool definitions can be tracked
+// across sessions.
+func ServerKey(argv []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(argv, "\x00")))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // Close flushes and closes the event log.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/mcptest"
 	"github.com/spacecr8ed/blackbox/internal/proxy"
+	"github.com/spacecr8ed/blackbox/internal/redact"
 )
 
 // TestHelperProcess doubles as the MCP server when re-executed by the test binary.
@@ -19,7 +21,11 @@ func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
-	_ = mcptest.NewServer().Serve(os.Stdin, os.Stdout)
+	srv := mcptest.NewServer()
+	if desc := os.Getenv("GO_FAKE_ECHO_DESC"); desc != "" {
+		srv.Tools[0].Description = desc
+	}
+	_ = srv.Serve(os.Stdin, os.Stdout)
 	os.Exit(0)
 }
 
@@ -41,31 +47,49 @@ func (m *memSink) snapshot() []event.Event {
 	return append([]event.Event(nil), m.events...)
 }
 
-func startProxied(t *testing.T, sink event.Sink) (*mcptest.Client, chan error) {
+func startProxied(t *testing.T, sink event.Sink, red *redact.Redactor, extraEnv ...string) (*mcptest.Client, chan error) {
 	t.Helper()
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	errCh := make(chan error, 1)
+	env := append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	env = append(env, extraEnv...)
 
 	go func() {
 		errCh <- proxy.RunStdio(context.Background(), proxy.Options{
 			Argv:      []string{os.Args[0], "-test.run=TestHelperProcess"},
-			Env:       append(os.Environ(), "GO_WANT_HELPER_PROCESS=1"),
+			Env:       env,
 			Stdin:     inR,
 			Stdout:    outW,
 			Stderr:    os.Stderr,
 			SessionID: "test-session",
 			Sink:      sink,
+			Redactor:  red,
 		})
 	}()
 
 	return mcptest.NewClient(inW, outR), errCh
 }
 
+func stop(t *testing.T, cli *mcptest.Client, errCh chan error) {
+	t.Helper()
+	if err := cli.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("proxy returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("proxy did not exit after stdin closed")
+	}
+}
+
 func TestRunStdioForwardsAndRecords(t *testing.T) {
 	sink := &memSink{}
-	cli, errCh := startProxied(t, sink)
+	cli, errCh := startProxied(t, sink, nil)
 
 	res, err := cli.Call("tools/list", map[string]any{})
 	if err != nil {
@@ -86,49 +110,64 @@ func TestRunStdioForwardsAndRecords(t *testing.T) {
 		t.Fatalf("tool result did not round-trip: %s", res)
 	}
 
-	if err := cli.Close(); err != nil {
-		t.Fatalf("client close: %v", err)
-	}
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("proxy returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("proxy did not exit after stdin closed")
+	if _, err := cli.Call("tools/call", map[string]any{
+		"name":      "fail",
+		"arguments": map[string]any{},
+	}); err != nil {
+		t.Fatalf("fail tool should return a result with isError, got: %v", err)
 	}
 
+	stop(t, cli, errCh)
 	events := sink.snapshot()
 	if len(events) == 0 {
 		t.Fatal("no events recorded")
 	}
 
-	var sawCall, sawResult bool
+	var (
+		sawCall      bool
+		sawResponse  bool
+		sawToolError bool
+	)
 	for _, e := range events {
-		if e.SessionID != "test-session" {
-			t.Fatalf("event missing session id: %+v", e)
-		}
-		if e.Seq == 0 {
-			t.Fatalf("event missing sequence: %+v", e)
+		if e.SessionID != "test-session" || e.Seq == 0 || e.At.IsZero() {
+			t.Fatalf("event missing identity fields: %+v", e)
 		}
 		if e.Direction == event.ClientToServer && e.Method == "tools/call" && e.Tool == "echo" {
 			sawCall = true
+			if !strings.Contains(e.Args, "hello through the proxy") {
+				t.Fatalf("call args not recorded: %+v", e)
+			}
+			if e.Status != event.StatusPending {
+				t.Fatalf("request status = %q, want pending", e.Status)
+			}
 		}
-		if e.Direction == event.ServerToClient && e.Method == "" {
-			sawResult = true
+		if e.Direction == event.ServerToClient && e.Method == "tools/call" && e.Tool == "echo" {
+			sawResponse = true
+			if e.DurationMS < 0 || e.Status != event.StatusOK {
+				t.Fatalf("bad response metadata: %+v", e)
+			}
+			if !strings.Contains(e.Result, "hello through the proxy") {
+				t.Fatalf("result not recorded: %+v", e)
+			}
+			if e.ResultType != "complete" {
+				t.Fatalf("resultType = %q, want complete", e.ResultType)
+			}
+		}
+		if e.Status == event.StatusToolError {
+			sawToolError = true
 		}
 	}
-	if !sawCall {
-		t.Fatalf("tools/call for echo was not recorded as a normalized event: %+v", events)
+	if !sawCall || !sawResponse {
+		t.Fatalf("missing correlated call/response events: %+v", events)
 	}
-	if !sawResult {
-		t.Fatalf("server result frame was not recorded: %+v", events)
+	if !sawToolError {
+		t.Fatalf("tool-level error was not classified: %+v", events)
 	}
 }
 
 func TestRecorderPreservesExactBytes(t *testing.T) {
 	sink := &memSink{}
-	cli, errCh := startProxied(t, sink)
+	cli, errCh := startProxied(t, sink, nil)
 
 	const frame = `{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}`
 	if err := cli.Send([]byte(frame)); err != nil {
@@ -142,10 +181,7 @@ func TestRecorderPreservesExactBytes(t *testing.T) {
 		t.Fatalf("unexpected response: %s", line)
 	}
 
-	if err := cli.Close(); err != nil {
-		t.Fatalf("client close: %v", err)
-	}
-	<-errCh
+	stop(t, cli, errCh)
 
 	for _, e := range sink.snapshot() {
 		if e.Direction != event.ClientToServer || e.Method != "tools/list" {
@@ -157,4 +193,67 @@ func TestRecorderPreservesExactBytes(t *testing.T) {
 		return
 	}
 	t.Fatal("client frame was not recorded")
+}
+
+func TestRedactionAppliesOnlyToRecording(t *testing.T) {
+	const secret = "sk-livesecret0123456789abcdef"
+
+	sink := &memSink{}
+	cli, errCh := startProxied(t, sink, redact.Default())
+
+	res, err := cli.Call("tools/call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"text": secret, "password": "hunter2hunter2"},
+	})
+	if err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	if !bytes.Contains(res, []byte(secret)) {
+		t.Fatal("proxy altered the live stream: the agent must still see the real value")
+	}
+
+	stop(t, cli, errCh)
+
+	events := sink.snapshot()
+	if len(events) == 0 {
+		t.Fatal("no events recorded")
+	}
+	for _, e := range events {
+		blob := e.Raw + e.Args + e.Result + e.Error
+		if strings.Contains(blob, secret) {
+			t.Fatalf("secret leaked into the recording: %+v", e)
+		}
+		if strings.Contains(blob, "hunter2hunter2") {
+			t.Fatalf("password leaked into the recording: %+v", e)
+		}
+	}
+	if !strings.Contains(events[len(events)-1].Raw, "[REDACTED") {
+		t.Fatalf("expected a redaction marker in the recording, got: %s", events[len(events)-1].Raw)
+	}
+}
+
+func TestToolDefinitionsAreHashed(t *testing.T) {
+	sink := &memSink{}
+	cli, errCh := startProxied(t, sink, nil)
+
+	if _, err := cli.Call("tools/list", map[string]any{}); err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	stop(t, cli, errCh)
+
+	for _, e := range sink.snapshot() {
+		if len(e.ToolDefs) == 0 {
+			continue
+		}
+		if len(e.ToolDefs) != 3 {
+			t.Fatalf("expected 3 tool definitions, got %d: %+v", len(e.ToolDefs), e.ToolDefs)
+		}
+		for _, d := range e.ToolDefs {
+			if len(d.Hash) != 16 {
+				t.Fatalf("tool %q has a bad hash: %q", d.Name, d.Hash)
+			}
+		}
+		return
+	}
+	t.Fatal("no tool definitions were hashed")
 }

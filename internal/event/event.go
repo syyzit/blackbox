@@ -11,19 +11,56 @@ const (
 	ServerToClient Direction = "s2c"
 )
 
+// Event status values.
+const (
+	StatusPending       = "pending"
+	StatusOK            = "ok"
+	StatusError         = "error"
+	StatusToolError     = "tool_error"
+	StatusInputRequired = "input_required"
+	StatusNotify        = "notify"
+)
+
+// ToolDef is a hashed tool definition observed in a tools/list response.
+type ToolDef struct {
+	Name    string `json:"name"`
+	Hash    string `json:"hash"`
+	Changed bool   `json:"changed,omitempty"`
+}
+
 // Event is one recorded protocol frame.
 //
-// Raw holds the exact bytes that crossed the wire (without the trailing newline).
-// Parsed fields are best-effort metadata for indexing; Raw is the evidence.
+// Raw holds the exact bytes that crossed the wire (without the trailing newline),
+// after secret redaction. Parsed fields are best-effort metadata for indexing.
 type Event struct {
 	SessionID string    `json:"sessionId"`
 	Seq       int64     `json:"seq"`
 	At        time.Time `json:"at"`
 	Direction Direction `json:"direction"`
-	Method    string    `json:"method,omitempty"`
-	Tool      string    `json:"tool,omitempty"`
-	ID        string    `json:"id,omitempty"`
-	Raw       string    `json:"raw"`
+
+	Method string `json:"method,omitempty"`
+	Tool   string `json:"tool,omitempty"`
+	ID     string `json:"id,omitempty"`
+
+	// Raw is the exact frame as received (without the trailing newline), redacted.
+	Raw string `json:"raw"`
+
+	// Args is the request/notification params as compact JSON.
+	Args string `json:"args,omitempty"`
+	// Result is the response result as compact JSON.
+	Result string `json:"result,omitempty"`
+	// Error is the JSON-RPC error, if the frame is an error response.
+	Error string `json:"error,omitempty"`
+	// ResultType is complete / input_required / an extension value.
+	ResultType string `json:"resultType,omitempty"`
+	// Status classifies the frame: pending, ok, error, tool_error, input_required, notify.
+	Status string `json:"status,omitempty"`
+	// DurationMS is populated on responses and measures the matching request.
+	DurationMS int64 `json:"durationMs,omitempty"`
+	// Size is the byte size of the frame as received.
+	Size int `json:"size,omitempty"`
+	// ToolDefs is populated on tools/list responses.
+	ToolDefs []ToolDef `json:"toolDefs,omitempty"`
 }
 
 // Sink receives events as they are recorded.

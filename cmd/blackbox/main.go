@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spacecr8ed/blackbox/internal/proxy"
+	"github.com/spacecr8ed/blackbox/internal/redact"
 	"github.com/spacecr8ed/blackbox/internal/store"
 )
 
@@ -32,6 +35,8 @@ func run(args []string) int {
 		return cmdSessions(args[1:])
 	case "show":
 		return cmdShow(args[1:])
+	case "http":
+		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("blackbox", version)
 		return 0
@@ -57,6 +62,9 @@ Usage:
 
   blackbox show [-home dir] <session-id|prefix>
         Print the recorded timeline for a session.
+
+  blackbox http -upstream <url> [-addr 127.0.0.1:8787]
+        Proxy a streamable-HTTP MCP server and record every request.
 
   blackbox version
 
@@ -99,6 +107,7 @@ func cmdRun(args []string) int {
 		Stderr:    os.Stderr,
 		SessionID: sess.Meta.ID,
 		Sink:      sess,
+		Redactor:  redact.Default(),
 	})
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -142,6 +151,46 @@ func cmdSessions(args []string) int {
 	return flush(w)
 }
 
+func cmdHTTP(args []string) int {
+	fs := flag.NewFlagSet("http", flag.ContinueOnError)
+	upstream := fs.String("upstream", "", "upstream MCP server base URL")
+	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *upstream == "" {
+		fmt.Fprintln(os.Stderr, "blackbox http: -upstream is required")
+		return 2
+	}
+
+	sess, err := store.Open(*home, []string{"http-proxy", *upstream})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	defer sess.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Fprintf(os.Stderr, "blackbox · session %s\n", sess.Meta.ID)
+	fmt.Fprintf(os.Stderr, "blackbox · %s -> %s\n", *addr, *upstream)
+
+	err = proxy.RunHTTP(ctx, *addr, proxy.HTTPOptions{
+		Upstream:  *upstream,
+		SessionID: sess.Meta.ID,
+		Sink:      sess,
+		Redactor:  redact.Default(),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	return 0
+}
+
 func cmdShow(args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	home := fs.String("home", "", "data directory")
@@ -166,15 +215,28 @@ func cmdShow(args []string) int {
 	fmt.Printf("events   %d\n\n", len(events))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SEQ\tT\tDIR\tMETHOD\tTOOL\tID\tFRAME")
+	fmt.Fprintln(w, "SEQ\tT\tDIR\tSTATUS\tMS\tMETHOD\tTOOL\tID\tFRAME")
 	for _, e := range events {
 		arrow := "->"
 		if e.Direction == "s2c" {
 			arrow = "<-"
 		}
 		t := e.At.Sub(meta.StartedAt).Round(time.Millisecond)
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			e.Seq, t, arrow, dash(e.Method), dash(e.Tool), dash(e.ID), truncate(e.Raw, 72))
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			e.Seq, t, arrow,
+			dash(e.Status),
+			e.DurationMS,
+			dash(e.Method), dash(e.Tool), dash(e.ID),
+			truncate(redact.Default().String(e.Raw), 64))
+		if e.ToolDefs != nil {
+			for _, d := range e.ToolDefs {
+				flag := ""
+				if d.Changed {
+					flag = "  ** CHANGED **"
+				}
+				fmt.Fprintf(w, "\t\t\t\t\t\t\to\t%s\t%s%s\n", d.Name, d.Hash, flag)
+			}
+		}
 	}
 	return flush(w)
 }
