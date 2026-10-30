@@ -112,6 +112,8 @@ func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	home := fs.String("home", "", "data directory")
 	policyPath := fs.String("policy", "", "policy file (default: <home>/policy.json)")
+	priceIn := fs.Float64("price-in", 0, "USD per million input tokens, for reported usage")
+	priceOut := fs.Float64("price-out", 0, "USD per million output tokens, for reported usage")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -139,19 +141,21 @@ func cmdRun(args []string) int {
 	fmt.Fprintf(os.Stderr, "blackbox · recording to %s\n", filepath.Join(sess.Home, "blackbox.db"))
 
 	err = proxy.RunStdio(context.Background(), proxy.Options{
-		Argv:      argv,
-		Stdin:     os.Stdin,
-		Stdout:    os.Stdout,
-		Stderr:    os.Stderr,
-		SessionID: sess.Meta.ID,
-		Sink:      sess,
-		Redactor:  redact.Default(),
-		Policy:    pol,
-		Server:    strings.Join(argv, " "),
-		ServerKey: sess.Meta.ServerKey,
-		Ledger:    sess.Ledger(),
-		Approver:  terminalApprover{},
-		Audit:     sess,
+		Argv:            argv,
+		Stdin:           os.Stdin,
+		Stdout:          os.Stdout,
+		Stderr:          os.Stderr,
+		SessionID:       sess.Meta.ID,
+		Sink:            sess,
+		Redactor:        redact.Default(),
+		PriceInPerMTok:  *priceIn,
+		PriceOutPerMTok: *priceOut,
+		Policy:          pol,
+		Server:          strings.Join(argv, " "),
+		ServerKey:       sess.Meta.ServerKey,
+		Ledger:          sess.Ledger(),
+		Approver:        terminalApprover{},
+		Audit:           sess,
 	})
 	if err != nil {
 		var exitErr *exec.ExitError

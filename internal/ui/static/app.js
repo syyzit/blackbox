@@ -247,6 +247,7 @@ function renderDetail() {
     e.status || "",
     e.durationMs ? `${e.durationMs}ms` : "",
     `${e.size || 0}B`,
+    e.toolHash ? `hash ${e.toolHash}` : "",
   ]
     .filter(Boolean)
     .join("  ·  ");

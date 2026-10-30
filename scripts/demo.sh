@@ -16,7 +16,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hello from the agent"}}}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"add","arguments":{"a":2,"b":40}}}' \
-  | ./bin/blackbox run -- ./bin/fakeserver >/dev/null
+  | ./bin/blackbox run -price-in 3 -price-out 15 -- ./bin/fakeserver >/dev/null
 A="$(newest)"
 ./bin/blackbox stats "$A"
 

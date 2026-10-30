@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -276,4 +277,37 @@ func TestToolDefinitionsAreHashed(t *testing.T) {
 		t.Fatal("echo call was not recorded")
 	}
 	t.Fatal("no tool definitions were hashed")
+}
+
+func TestCostFromReportedUsage(t *testing.T) {
+	sink := &memSink{}
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink:            sink,
+		PriceInPerMTok:  3,
+		PriceOutPerMTok: 15,
+	})
+
+	if _, err := cli.Call("tools/call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"text": "bill me"},
+	}); err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	stop(t, cli, errCh)
+
+	// The fake server reports 1200 input and 300 output tokens.
+	const want = 1200.0/1e6*3 + 300.0/1e6*15
+	for _, e := range sink.snapshot() {
+		if e.Direction != event.ServerToClient || e.Tool != "echo" {
+			continue
+		}
+		if e.UsageIn != 1200 || e.UsageOut != 300 {
+			t.Fatalf("usage not recorded: %+v", e)
+		}
+		if math.Abs(e.CostUSD-want) > 1e-9 {
+			t.Fatalf("cost = %f, want %f", e.CostUSD, want)
+		}
+		return
+	}
+	t.Fatal("echo response not recorded")
 }

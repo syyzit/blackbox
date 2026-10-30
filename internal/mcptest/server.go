@@ -20,8 +20,10 @@ type Tool struct {
 
 // Reply is what a fake tool returns.
 type Reply struct {
-	Text    string
-	IsError bool
+	Text     string
+	IsError  bool
+	UsageIn  int
+	UsageOut int
 }
 
 // Handler implements tool behavior.
@@ -68,7 +70,7 @@ func defaultHandle(name string, args json.RawMessage) Reply {
 			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(args, &a)
-		return Reply{Text: a.Text}
+		return Reply{Text: a.Text, UsageIn: 1200, UsageOut: 300}
 	case "add":
 		var a struct {
 			A float64 `json:"a"`
@@ -142,6 +144,12 @@ func (s *Server) respond(w io.Writer, msg *jsonrpc.Message) error {
 		}
 		if reply.IsError {
 			payload["isError"] = true
+		}
+		if reply.UsageIn > 0 || reply.UsageOut > 0 {
+			payload["usage"] = map[string]any{
+				"input_tokens":  reply.UsageIn,
+				"output_tokens": reply.UsageOut,
+			}
 		}
 		result = payload
 	case "ping":

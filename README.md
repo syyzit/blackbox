@@ -41,6 +41,9 @@ Requires Go 1.26+.
 
 ```sh
 blackbox run -- npx -y @modelcontextprotocol/server-filesystem ~/notes
+
+# if your server reports token usage, pass prices to get a real cost figure
+blackbox run -price-in 3 -price-out 15 -- your-server
 ```
 
 Put it in your agent's MCP config exactly where the server command was:
@@ -161,7 +164,9 @@ CI runs `go vet` and `go test` on every push.
 ## Limitations
 
 - MCP does not define billing. Cost is derived from token usage only when a server
-  reports it, and is zero otherwise. Latency and bytes are always recorded.
+  reports it, using `-price-in` / `-price-out` (USD per million tokens). Most servers
+  report nothing, so cost stays zero. Latency and bytes are always recorded. The bundled
+  fake server reports tokens so the demo can show a non-zero figure.
 - Replay matches calls by method, tool, and arguments. A nondeterministic server that
   returns different payloads for identical calls will show up as `result_changed`.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
