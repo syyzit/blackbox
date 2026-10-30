@@ -533,7 +533,51 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
+	// Additive migrations for databases created by an older build.
+	for _, add := range []struct {
+		table, column, ddl string
+	}{
+		{"events", "tool_hash", `ALTER TABLE events ADD COLUMN tool_hash TEXT NOT NULL DEFAULT ''`},
+		{"events", "usage_in", `ALTER TABLE events ADD COLUMN usage_in INTEGER NOT NULL DEFAULT 0`},
+		{"events", "usage_out", `ALTER TABLE events ADD COLUMN usage_out INTEGER NOT NULL DEFAULT 0`},
+		{"events", "cost_usd", `ALTER TABLE events ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`},
+	} {
+		ok, err := hasColumn(db, add.table, add.column)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := db.Exec(add.ddl); err != nil {
+				return fmt.Errorf("store: add %s.%s: %w", add.table, add.column, err)
+			}
+		}
+	}
 	return nil
+}
+
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func resolveID(db *sql.DB, prefix string) (string, error) {
