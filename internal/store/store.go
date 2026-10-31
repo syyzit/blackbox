@@ -138,11 +138,11 @@ func insertEvent(db execer, e event.Event) error {
 		`INSERT INTO events
 		 (session_id, seq, at, direction, method, tool, tool_hash, rpc_id, status, result_type,
 		  duration_ms, size, args, result, error, raw, usage_in, usage_out, cost_usd,
-		  call_id, subscription_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  call_id, subscription_id, external_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.SessionID, e.Seq, e.At.UnixMilli(), string(e.Direction), e.Method, e.Tool, e.ToolHash, e.ID,
 		e.Status, e.ResultType, e.DurationMS, e.Size, e.Args, e.Result, e.Error, e.Raw,
-		e.UsageIn, e.UsageOut, e.CostUSD, e.CallID, e.SubscriptionID,
+		e.UsageIn, e.UsageOut, e.CostUSD, e.CallID, e.SubscriptionID, e.ExternalID,
 	)
 	return err
 }
@@ -293,7 +293,7 @@ func loadEvents(db *sql.DB, sessionID string) ([]event.Event, error) {
 	rows, err := db.Query(
 		`SELECT seq, at, direction, method, tool, tool_hash, rpc_id, status, result_type,
 		        duration_ms, size, args, result, error, raw, usage_in, usage_out, cost_usd,
-		        call_id, subscription_id
+		        call_id, subscription_id, external_id
 		   FROM events WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
@@ -311,7 +311,7 @@ func loadEvents(db *sql.DB, sessionID string) ([]event.Event, error) {
 		if err := rows.Scan(
 			&e.Seq, &at, &dir, &e.Method, &e.Tool, &e.ToolHash, &e.ID, &e.Status, &e.ResultType,
 			&e.DurationMS, &e.Size, &args, &result, &errText, &raw,
-			&e.UsageIn, &e.UsageOut, &e.CostUSD, &e.CallID, &e.SubscriptionID,
+			&e.UsageIn, &e.UsageOut, &e.CostUSD, &e.CallID, &e.SubscriptionID, &e.ExternalID,
 		); err != nil {
 			return nil, err
 		}
@@ -513,6 +513,7 @@ CREATE TABLE IF NOT EXISTS events (
   tool_hash    TEXT NOT NULL DEFAULT '',
   call_id      TEXT NOT NULL DEFAULT '',
   subscription_id TEXT NOT NULL DEFAULT '',
+  external_id  TEXT NOT NULL DEFAULT '',
   rpc_id       TEXT NOT NULL DEFAULT '',
   status       TEXT NOT NULL DEFAULT '',
   result_type  TEXT NOT NULL DEFAULT '',
@@ -614,6 +615,7 @@ func migrate(db *sql.DB) error {
 		{"events", "call_id", `ALTER TABLE events ADD COLUMN call_id TEXT NOT NULL DEFAULT ''`},
 		{"events", "subscription_id", `ALTER TABLE events ADD COLUMN subscription_id TEXT NOT NULL DEFAULT ''`},
 		{"policy_decisions", "mode", `ALTER TABLE policy_decisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'enforce'`},
+		{"events", "external_id", `ALTER TABLE events ADD COLUMN external_id TEXT NOT NULL DEFAULT ''`},
 	} {
 		ok, err := hasColumn(db, add.table, add.column)
 		if err != nil {

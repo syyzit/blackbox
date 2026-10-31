@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/spacecr8ed/blackbox/internal/coverage"
+	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/policy"
 	"github.com/spacecr8ed/blackbox/internal/proxy"
 	"github.com/spacecr8ed/blackbox/internal/redact"
@@ -72,6 +73,8 @@ func run(args []string) int {
 		return cmdIngest(args[1:])
 	case "check":
 		return cmdCheck(args[1:])
+	case "trace":
+		return cmdTrace(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -142,6 +145,9 @@ Usage:
 
   blackbox check [-home dir] < check.json
         Evaluate the policy for a built-in tool call (exit 0 allow, 1 deny).
+
+  blackbox trace [agent-session-id]
+        Merge MCP and built-in frames into one timeline per agent session.
 
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.
@@ -556,12 +562,12 @@ func cmdDiff(args []string) int {
 		return 2
 	}
 
-	_, a, err := store.Find(*home, fs.Arg(0))
+	a, err := eventsForDiff(*home, fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
 	}
-	_, b, err := store.Find(*home, fs.Arg(1))
+	b, err := eventsForDiff(*home, fs.Arg(1))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
@@ -569,6 +575,26 @@ func cmdDiff(args []string) int {
 
 	printReport(replay.Diff(a, b))
 	return 0
+}
+
+// eventsForDiff accepts either a session id or a merged agent-session id.
+func eventsForDiff(home, id string) ([]event.Event, error) {
+	// Agent session ids start with ses_; a session lookup would otherwise match the
+	// plugin's oc- alias and diff only the built-in half.
+	if strings.HasPrefix(id, "ses_") {
+		if tr, err := store.TraceFor(home, id); err == nil {
+			return tr.Events, nil
+		}
+	}
+	_, events, err := store.Find(home, id)
+	if err == nil {
+		return events, nil
+	}
+	tr, traceErr := store.TraceFor(home, id)
+	if traceErr != nil {
+		return nil, err
+	}
+	return tr.Events, nil
 }
 
 func printReport(r replay.Report) {

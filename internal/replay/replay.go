@@ -201,7 +201,7 @@ func (e *Engine) Respond(line []byte) ([]byte, bool) {
 	// A retry legitimately carries extra fields (requestState, inputResponses), so only
 	// compare arguments on a first attempt.
 	if !msg.HasInputResponses() && msg.RequestState() == "" &&
-		canonical(x.Request.Args) != canonical(string(msg.Params)) {
+		diffable(x.Request.Args) != diffable(string(msg.Params)) {
 		e.divergences = append(e.divergences, Divergence{
 			Kind:   "args_changed",
 			Index:  int64(best),

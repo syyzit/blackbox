@@ -46,6 +46,8 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 - **Editor plug-in**: the bundled OpenCode plugin records built-in tool calls
   (`shell`, `read`, `write`, `edit`) through `blackbox ingest`, skipping MCP tools so
   nothing is counted twice.
+- **Traces**: one timeline per agent session, merging MCP and built-in frames, with
+  `diff` comparing whole agent runs rather than single connections.
 
 ## Install
 
@@ -119,6 +121,8 @@ blackbox sessions                       # newest first, with frame counts
 blackbox show <id>                      # timeline: direction, status, latency
 blackbox stats <id>                     # calls, errors, latency, bytes, cost
 blackbox decisions <id>                 # policy audit log
+blackbox trace                          # merged agent sessions, newest first
+blackbox trace ses_...                  # one timeline: MCP + built-in calls
 blackbox coverage <id>                  # file changes the recording missed
 blackbox export <id> -out incident.json # redacted incident bundle
 blackbox ui -open                       # the web interface
@@ -133,6 +137,36 @@ The UI follows a session while it is being recorded, keeps your selected frame p
 new ones arrive, and has `j`/`k` navigation, a frame inspector with raw / args / result /
 error / policy tabs, rug-pull and redaction badges, a side-by-side run diff, and an
 **Export** button for the redacted incident bundle.
+
+## Traces
+
+An agent session is not one session in the archive: MCP calls land in a server
+connection and built-in calls land in `oc-<id>`. OpenCode sends its session id in
+`_meta` on every MCP call, and the plugin uses the same id, so Black Box can merge them:
+
+```sh
+blackbox trace
+blackbox trace ses_e6cdef29affe
+```
+
+```
+trace    ses_e6cdef29affe
+events   4 across 2 session(s)
+window   19:03:01 → 19:03:01
+
+T     SRC      STATUS   TOOL            MS
+0s    builtin  pending  shell           0
+2ms   mcp      pending  list_directory  0
+4ms   mcp      ok       list_directory  2
+18ms  builtin  ok       shell           18
+```
+
+`diff` accepts trace ids too, so two attempts at the same task can be compared end to
+end, built-ins included. The UI exposes the same view through the **Trace** button on any
+session that carries an agent id.
+
+Traces depend on the agent reporting its session id. OpenCode does; other hosts will need
+the same `_meta` field.
 
 ## Replay and diff
 
@@ -327,6 +361,8 @@ CI runs `go vet` and `go test -race` on every push.
   separately, since that duplicates the fields above.
 - Coverage is a heuristic. It catches changes it can see on disk; it cannot prove that a
   recorded shell call is what caused one, and it only covers the connection's lifetime.
+- Traces rely on the agent sending a session id in `_meta`; agents that do not will show
+  up as separate sessions.
 - `blackbox ingest` trusts the local caller. Anyone who can run it can add events, so it
   is an integration hook, not an authenticated API.
 - For built-in tools, `require_approval` currently fails the call with "approval required"

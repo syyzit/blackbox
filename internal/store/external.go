@@ -67,6 +67,9 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 	for _, e := range events {
 		seq++
 		e.SessionID = id
+		if e.ExternalID == "" {
+			e.ExternalID = sessionID
+		}
 		e.Seq = seq
 		if e.At.IsZero() {
 			e.At = now
@@ -126,7 +129,7 @@ func EventsBetween(home string, start, end time.Time) ([]event.Event, error) {
 	rows, err := db.Query(
 		`SELECT session_id, seq, at, direction, method, tool, tool_hash, rpc_id, status,
 		        result_type, duration_ms, size, args, result, error, raw, usage_in,
-		        usage_out, cost_usd, call_id, subscription_id
+		        usage_out, cost_usd, call_id, subscription_id, external_id
 		   FROM events
 		  WHERE at >= ? AND at <= ?
 		  ORDER BY at, seq`, start.UnixMilli(), end.UnixMilli())
@@ -150,6 +153,7 @@ func EventsBetween(home string, start, end time.Time) ([]event.Event, error) {
 			&e.SessionID, &e.Seq, &at, &dir, &e.Method, &e.Tool, &e.ToolHash, &e.ID,
 			&e.Status, &e.ResultType, &e.DurationMS, &e.Size, &args, &result, &errText,
 			&raw, &e.UsageIn, &e.UsageOut, &e.CostUSD, &e.CallID, &e.SubscriptionID,
+			&e.ExternalID,
 		); err != nil {
 			return nil, err
 		}

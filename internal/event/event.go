@@ -69,6 +69,9 @@ type Event struct {
 	CallID string `json:"callId,omitempty"`
 	// SubscriptionID correlates a notification with its subscriptions/listen stream.
 	SubscriptionID string `json:"subscriptionId,omitempty"`
+	// ExternalID links a frame to an agent session outside MCP, such as an OpenCode
+	// session id. Built-in calls and MCP calls from the same session share it.
+	ExternalID string `json:"externalId,omitempty"`
 	// Decision and DecisionReason are set when a policy gate evaluated the frame.
 	Decision       string `json:"decision,omitempty"`
 	DecisionReason string `json:"decisionReason,omitempty"`

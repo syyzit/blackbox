@@ -406,3 +406,27 @@ func TestMRTRDoesNotLeakIntoUnrelatedCalls(t *testing.T) {
 		t.Fatalf("expected two distinct logical calls, got %v", ids)
 	}
 }
+
+func TestOpenCodeSessionIDIsCaptured(t *testing.T) {
+	sink := &memSink{}
+	cli, errCh := startProxied(t, sink, nil)
+
+	if _, err := cli.Call("tools/call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"text": "tagged"},
+		"_meta":     map[string]any{"ai.opencode/sessionID": "ses_tagged"},
+	}); err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	stop(t, cli, errCh)
+
+	for _, e := range sink.snapshot() {
+		if e.Direction == event.ClientToServer && e.Tool == "echo" {
+			if e.ExternalID != "ses_tagged" {
+				t.Fatalf("external id = %q", e.ExternalID)
+			}
+			return
+		}
+	}
+	t.Fatal("call was not recorded")
+}

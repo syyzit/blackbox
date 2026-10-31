@@ -11,6 +11,7 @@ const state = {
   compare: null,
   decisions: [],
   coverage: null,
+  traceId: null,
   search: "",
   filter: "",
   tab: "raw",
@@ -115,6 +116,7 @@ async function openSession(id, seq) {
     state.stats = data.stats;
     state.decisions = data.decisions || [];
     state.coverage = data.coverage || null;
+    state.traceId = data.traceId || null;
     state.selected = state.events.length ? 0 : -1;
     if (seq != null) {
       const idx = state.events.findIndex((e) => e.seq === seq);
@@ -127,6 +129,7 @@ async function openSession(id, seq) {
     renderAll();
     updateDiffButton();
     $("exportBtn").disabled = false;
+    $("traceBtn").disabled = !state.traceId;
   } catch (err) {
     console.error(err);
   }
@@ -399,8 +402,37 @@ async function renderSearch(query) {
   }
 }
 
+function sourceOf(event) {
+  return String(event.sessionId || "").startsWith("oc-") ? "builtin" : "mcp";
+}
+
+async function showTrace() {
+  if (!state.traceId) return;
+  try {
+    const data = await api("/api/traces/" + encodeURIComponent(state.traceId));
+    const tr = data.trace;
+    const start = new Date(tr.startedAt).getTime();
+    const lines = (tr.events || []).map((e) => {
+      const offset = Math.max(0, new Date(e.at).getTime() - start);
+      const tool = e.tool || e.method || "-";
+      return `<div class="diff-line"><span class="kind">${esc(fmtOffset(offset))}</span>${esc(
+        sourceOf(e)
+      )} · ${esc(tool)} · ${esc(e.status || "-")}${e.durationMs ? ` · ${e.durationMs}ms` : ""}</div>`;
+    });
+    const header = `${tr.events.length} events · ${tr.sessions.length} session(s) · ${new Date(
+      tr.startedAt
+    ).toLocaleString()}`;
+    $("modalTitle").textContent = "Trace " + tr.externalId;
+    $("diffBody").innerHTML = `<div class="muted mono" style="margin-bottom:12px">${esc(header)}</div>` + lines.join("");
+    $("diffModal").classList.remove("hidden");
+  } catch (err) {
+    console.error(err);
+  }
+}
+
 async function showDiff() {
   if (!state.meta || !state.compare) return;
+  $("modalTitle").textContent = "Run diff";
   try {
     const data = await api(`/api/diff?a=${encodeURIComponent(state.meta.id)}&b=${encodeURIComponent(state.compare)}`);
     const r = data.report;
@@ -444,6 +476,7 @@ function bind() {
   });
 
   $("diffBtn").addEventListener("click", showDiff);
+  $("traceBtn").addEventListener("click", showTrace);
   $("exportBtn").addEventListener("click", () => {
     if (!state.meta) return;
     window.location.href = "/api/sessions/" + encodeURIComponent(state.meta.id) + "/export";

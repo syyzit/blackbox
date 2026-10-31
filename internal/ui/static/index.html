@@ -15,6 +15,7 @@
   </div>
   <div class="actions">
     <input id="filter" type="search" placeholder="filter method or tool" autocomplete="off" spellcheck="false">
+    <button id="traceBtn" class="btn" disabled>Trace</button>
     <button id="exportBtn" class="btn" disabled>Export</button>
     <button id="diffBtn" class="btn" disabled>Diff with B</button>
   </div>
@@ -72,7 +73,7 @@
 <div id="diffModal" class="modal hidden" role="dialog" aria-modal="true">
   <div class="modal-card">
     <div class="modal-head">
-      <h2>Run diff</h2>
+      <h2 id="modalTitle">Run diff</h2>
       <button id="closeDiff" class="btn ghost">close</button>
     </div>
     <div id="diffBody" class="modal-body"></div>

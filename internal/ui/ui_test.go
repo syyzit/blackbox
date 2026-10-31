@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/event"
@@ -212,6 +213,77 @@ func TestCoverageInSessionAPI(t *testing.T) {
 	}
 	if out.Coverage == nil || out.Coverage.Unrecorded != 1 || out.Coverage.Files[0].Path != "a.go" {
 		t.Fatalf("coverage missing from the API: %+v", out.Coverage)
+	}
+}
+
+func TestTraceAPI(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	sess, err := store.Open(home, []string{"mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Emit(event.Event{
+		Direction: event.ClientToServer, Method: "tools/call", Tool: "list_directory",
+		Status: event.StatusPending, At: now, ExternalID: "ses_ui", Raw: `{}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.AppendExternal(home, "ses_ui", []string{"opencode", "builtins"}, []event.Event{{
+		Direction: event.ClientToServer, Method: "tools/call", Tool: "shell",
+		Status: event.StatusPending, At: now.Add(time.Second), Raw: `{}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(home).Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/traces", nil))
+	if rec.Code != 200 {
+		t.Fatalf("traces status %d: %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Traces []store.TraceSummary `json:"traces"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Traces) != 1 || list.Traces[0].ExternalID != "ses_ui" || list.Traces[0].Events != 2 {
+		t.Fatalf("bad trace list: %+v", list.Traces)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/traces/ses_ui", nil))
+	if rec.Code != 200 {
+		t.Fatalf("trace status %d: %s", rec.Code, rec.Body.String())
+	}
+	var detail struct {
+		Trace store.Trace `json:"trace"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Trace.Events) != 2 || len(detail.Trace.Sessions) != 2 {
+		t.Fatalf("bad trace: %+v", detail.Trace)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/"+id, nil))
+	var session struct {
+		TraceID string `json:"traceId"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	if session.TraceID != "ses_ui" {
+		t.Fatalf("session trace id = %q", session.TraceID)
 	}
 }
 

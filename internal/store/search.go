@@ -63,6 +63,7 @@ func Search(home string, opts SearchOptions) ([]SearchHit, error) {
 		`SELECT e.session_id, e.seq, e.at, e.direction, e.method, e.tool, e.tool_hash,
 		        e.rpc_id, e.status, e.result_type, e.duration_ms, e.size, e.args, e.result,
 		        e.error, e.raw, e.usage_in, e.usage_out, e.cost_usd, e.call_id, e.subscription_id,
+		        e.external_id,
 		        s.id, s.started_at, s.argv, s.pid, s.hostname, s.server_key
 		   FROM events_fts f
 		   JOIN events e ON e.id = f.rowid
@@ -104,7 +105,7 @@ func Search(home string, opts SearchOptions) ([]SearchHit, error) {
 			&h.Event.ToolHash, &h.Event.ID, &h.Event.Status, &h.Event.ResultType,
 			&h.Event.DurationMS, &h.Event.Size, &args, &result, &errText, &raw,
 			&h.Event.UsageIn, &h.Event.UsageOut, &h.Event.CostUSD, &h.Event.CallID,
-			&h.Event.SubscriptionID,
+			&h.Event.SubscriptionID, &h.Event.ExternalID,
 			&h.Session.ID, &started, &argvJSON, &h.Session.PID, &h.Session.Hostname, &h.Session.ServerKey,
 		); err != nil {
 			return nil, err

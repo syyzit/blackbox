@@ -174,6 +174,26 @@ blocks. Once a rule looks relevant, change `mode` to `enforce`; nothing else mov
 Note: editing the plugin source does not hot-reload it. Touching `opencode.json` reloads
 the plugin; the proxy picks up a new policy on its next connection.
 
+## One trace per session
+
+MCP calls and built-in calls land in different sessions, so a `blackbox trace` merges
+them by the OpenCode session id (`_meta["ai.opencode/sessionID"]` on MCP calls, the plugin
+session id for built-ins):
+
+```
+trace    ses_e6cdef29affe6rMsFiK7ccP0ML
+events   4 across 2 session(s)
+
+T     SRC      STATUS   TOOL            MS
+0s    builtin  pending  shell           0
+2ms   mcp      pending  list_directory  0
+4ms   mcp      ok       list_directory  2
+18ms  builtin  ok       shell           18
+```
+
+`diff` accepts trace ids and ignores per-session metadata (`_meta`) so two runs that did
+the same thing do not look different just because the session id changed.
+
 ## The loop
 
 ```sh

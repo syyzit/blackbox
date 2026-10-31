@@ -230,3 +230,19 @@ func TestDiffGroupsMRTRRounds(t *testing.T) {
 		t.Fatalf("rounds were not collapsed: %d/%d", report.CallsA, report.CallsB)
 	}
 }
+
+func TestDiffIgnoresPerSessionMeta(t *testing.T) {
+	run := func(sessionID string) []event.Event {
+		args := `{"name":"echo","arguments":{"text":"hi"},"_meta":{"ai.opencode/sessionID":"` + sessionID + `"}}`
+		return []event.Event{
+			{Direction: event.ClientToServer, Method: "tools/call", Tool: "echo", ID: "1",
+				Status: event.StatusPending, Args: args, Raw: `{}`},
+			{Direction: event.ServerToClient, ID: "1", Status: event.StatusOK,
+				Result: `{"ok":true}`, Raw: `{}`},
+		}
+	}
+	report := Diff(run("ses_a"), run("ses_b"))
+	if !report.Identical {
+		t.Fatalf("session metadata caused a false divergence: %+v", report.Changes)
+	}
+}

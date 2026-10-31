@@ -140,11 +140,12 @@ func RunStdio(ctx context.Context, o Options) error {
 }
 
 type call struct {
-	method string
-	tool   string
-	at     time.Time
-	callID string
-	state  string
+	method     string
+	tool       string
+	at         time.Time
+	callID     string
+	state      string
+	externalID string
 }
 
 type openCall struct {
@@ -452,6 +453,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		return
 	}
 	e.SubscriptionID = msg.SubscriptionID()
+	e.ExternalID = msg.ExternalID()
 
 	method := msg.Method
 	if hint.method != "" {
@@ -483,6 +485,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		p.pending[e.ID] = call{
 			method: e.Method, tool: e.Tool, at: e.At,
 			callID: e.CallID, state: msg.RequestState(),
+			externalID: e.ExternalID,
 		}
 		p.mu.Unlock()
 
@@ -528,6 +531,9 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			e.Tool = c.tool
 			e.CallID = c.callID
 			e.DurationMS = e.At.Sub(c.at).Milliseconds()
+			if e.ExternalID == "" {
+				e.ExternalID = c.externalID
+			}
 		}
 
 		if msg.Error != nil {

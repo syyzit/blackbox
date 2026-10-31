@@ -34,6 +34,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions/", s.handleSession)
 	mux.HandleFunc("/api/diff", s.handleDiff)
 	mux.HandleFunc("/api/search", s.handleSearch)
+	mux.HandleFunc("/api/traces", s.handleTraces)
+	mux.HandleFunc("/api/traces/", s.handleTrace)
 
 	sub, err := fs.Sub(embedded, "static")
 	if err != nil {
@@ -100,13 +102,55 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	traceID := ""
+	for _, e := range events {
+		if e.ExternalID != "" {
+			traceID = e.ExternalID
+			break
+		}
+	}
 	writeJSON(w, map[string]any{
 		"meta":      meta,
 		"stats":     stats,
 		"events":    events,
 		"decisions": decisions,
 		"coverage":  cov,
+		"traceId":   traceID,
 	})
+}
+
+func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	traces, err := store.TraceList(s.Home, 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if traces == nil {
+		traces = []store.TraceSummary{}
+	}
+	writeJSON(w, map[string]any{"traces": traces})
+}
+
+func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/traces/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	tr, err := store.TraceFor(s.Home, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"trace": tr})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

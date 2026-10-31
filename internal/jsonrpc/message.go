@@ -205,6 +205,28 @@ func (m *Message) SubscriptionID() string {
 	return s
 }
 
+// ExternalID reads params._meta["ai.opencode/sessionID"], the OpenCode session id.
+func (m *Message) ExternalID() string {
+	if len(m.Params) == 0 {
+		return ""
+	}
+	var p struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if err := json.Unmarshal(m.Params, &p); err != nil || p.Meta == nil {
+		return ""
+	}
+	raw, ok := p.Meta["ai.opencode/sessionID"]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
+}
+
 // ToolName extracts params.name for tools/call frames.
 func (m *Message) ToolName() string {
 	if m.Method != "tools/call" || len(m.Params) == 0 {

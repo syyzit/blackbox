@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/spacecr8ed/blackbox/internal/event"
@@ -42,7 +43,7 @@ func calls(events []event.Event) []call {
 		}
 		c := call{
 			ev:     e,
-			key:    e.Method + "\x00" + e.Tool + "\x00" + canonical(e.Args),
+			key:    e.Method + "\x00" + e.Tool + "\x00" + diffable(e.Args),
 			result: results[e.ID],
 		}
 		if i, ok := position[group]; ok {
@@ -147,6 +148,27 @@ func Diff(a, b []event.Event) Report {
 
 	rep.Identical = len(rep.Changes) == 0
 	return rep
+}
+
+// diffable strips per-call protocol metadata that changes between otherwise identical
+// runs, such as the agent session id OpenCode puts in _meta.
+func diffable(args string) string {
+	if args == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(args), &m); err != nil {
+		return canonical(args)
+	}
+	if _, ok := m["_meta"]; !ok {
+		return canonical(args)
+	}
+	delete(m, "_meta")
+	b, err := json.Marshal(m)
+	if err != nil {
+		return canonical(args)
+	}
+	return string(b)
 }
 
 func label(e event.Event) string {
