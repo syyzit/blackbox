@@ -34,6 +34,10 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
   frame inspector, run diff.
 - **Redacted export**: one JSON incident bundle per session, safe to attach to a bug
   report.
+- **Config wrapping**: `init` finds Claude Code, Cursor, VS Code, and OpenCode configs and
+  routes selected servers through Black Box, with a backup.
+- **One-command dev loop**: `dev` records a server, serves the UI, and follows the run.
+- **Retention**: `prune` deletes old sessions or keeps the store under a size budget.
 
 ## Install
 
@@ -45,6 +49,32 @@ make build                        # bin/blackbox and demo binaries
 ```
 
 Requires Go 1.26+.
+
+## Wire it into an agent
+
+```sh
+blackbox init                      # discover configs, change nothing
+blackbox init -wrap all -dry-run   # show the rewrite
+blackbox init -wrap all            # back up each config and write
+```
+
+It understands the `mcpServers` shape (Claude Code, Cursor, Claude Desktop), VS Code's
+`servers`, and OpenCode's `mcp` with array commands. Remote servers are skipped, already
+wrapped servers are left alone, and `-config path` targets a single file. Every write
+leaves a `*.blackbox-backup-<timestamp>` next to the original.
+
+If you prefer to edit by hand, the result is just a command rewrite:
+
+```json
+{
+  "mcpServers": {
+    "files": {
+      "command": "blackbox",
+      "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/me/notes"]
+    }
+  }
+}
+```
 
 ## Record
 
@@ -83,7 +113,12 @@ blackbox stats <id>                     # calls, errors, latency, bytes, cost
 blackbox decisions <id>                 # policy audit log
 blackbox export <id> -out incident.json # redacted incident bundle
 blackbox ui -open                       # the web interface
+blackbox dev -- ./my-server             # record + UI + follow, in one command
+blackbox prune -older-than 30d          # retention
 ```
+
+`dev` picks the next free port, opens the browser on the new session, and keeps the UI
+up after the server exits so you can inspect what happened.
 
 The UI follows a session while it is being recorded, keeps your selected frame pinned as
 new ones arrive, and has `j`/`k` navigation, a frame inspector with raw / args / result /
@@ -130,6 +165,19 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
   is denied until you intentionally re-approve it.
 
 Every decision is written to the audit log and surfaced in the UI.
+
+## Retention
+
+```sh
+blackbox prune -dry-run -older-than 30d
+blackbox prune -older-than 30d -max-size 500MB
+blackbox prune -max-size 2GB -vacuum=false
+```
+
+`-older-than` accepts `30d`, `2w`, `12h`, or any Go duration. `-max-size` accepts `500MB`,
+`2GB`, or bytes and deletes the oldest sessions until the store fits. Deletes cascade to
+events, tool definitions, and policy decisions; `VACUUM` (on by default) reclaims the
+file. Run it when no recorder is active.
 
 ## How it works
 

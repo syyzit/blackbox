@@ -53,6 +53,12 @@ func run(args []string) int {
 		return cmdExport(args[1:])
 	case "ui":
 		return cmdUI(args[1:])
+	case "init":
+		return cmdInit(args[1:])
+	case "prune":
+		return cmdPrune(args[1:])
+	case "dev":
+		return cmdDev(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -96,6 +102,15 @@ Usage:
 
   blackbox export [-home dir] [-out file] <session-id|prefix>
         Write a redacted incident bundle (JSON) for a session.
+
+  blackbox init [-dry-run] [-wrap all|name1,name2] [-config path]
+        Find agent MCP configs and route selected servers through Black Box.
+
+  blackbox prune [-older-than 30d] [-max-size 500MB] [-dry-run]
+        Apply a retention policy to the local store.
+
+  blackbox dev [-addr 127.0.0.1:8787] -- <server command>
+        Record a server and serve the UI for it in one command.
 
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.
@@ -262,6 +277,11 @@ func cmdHTTP(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func isTTY() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func loadPolicy(home, path string) (*policy.Policy, error) {

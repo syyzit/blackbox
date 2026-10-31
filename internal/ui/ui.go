@@ -134,6 +134,12 @@ func Serve(ctx context.Context, home, addr string) error {
 	if err != nil {
 		return err
 	}
+	return ServeListener(ctx, home, ln)
+}
+
+// ServeListener is Serve on an existing listener, for callers that need to pick the
+// port before starting (and report the real address to the user).
+func ServeListener(ctx context.Context, home string, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           New(home).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,

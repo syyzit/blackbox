@@ -441,7 +441,10 @@ func openHomeDB(home string) (*sql.DB, error) {
 }
 
 func openDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path)
+	// Per-connection pragmas must travel in the DSN: the pool creates connections
+	// lazily, and a PRAGMA executed once only applies to that one connection.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open db: %w", err)
 	}

@@ -51,7 +51,13 @@ async function loadSessions() {
     const { sessions } = await api("/api/sessions");
     state.sessions = sessions || [];
     renderSessions();
-    if (!state.meta && state.sessions.length) openSession(state.sessions[0].id);
+    if (!state.meta && state.sessions.length) {
+      const wanted = new URLSearchParams(location.search).get("session");
+      const match = wanted
+        ? state.sessions.find((s) => s.id === wanted || s.id.startsWith(wanted))
+        : null;
+      openSession(match ? match.id : state.sessions[0].id);
+    }
   } catch (err) {
     console.error(err);
   }
@@ -108,6 +114,7 @@ async function openSession(id) {
     state.selected = state.events.length ? 0 : -1;
     state.tab = "raw";
     lastSignature = signature(data);
+    history.replaceState(null, "", "?session=" + encodeURIComponent(data.meta.id));
     renderSessions();
     renderAll();
     updateDiffButton();
