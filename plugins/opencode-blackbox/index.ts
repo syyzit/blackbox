@@ -96,8 +96,26 @@ export default {
           input: event.input ?? {},
         }),
       )
-      if (check.code !== 0) {
+      if (check.code === 1) {
         throw new Error(check.message || `blackbox policy blocked ${event.tool}`)
+      }
+
+      if (check.code === 2) {
+        // A require_approval rule in enforce mode: use OpenCode's own permission UI so
+        // the prompt looks and behaves like every other approval.
+        try {
+          await ctx.permission.assert({
+            sessionID: event.sessionID,
+            agent: event.agent,
+            source: { type: "tool", messageID: event.messageID, id: event.id },
+            action: "blackbox",
+            resources: [event.tool],
+            save: [event.tool],
+            metadata: { reason: check.message },
+          })
+        } catch (err: any) {
+          throw new Error(String(err?.message ?? `approval rejected for ${event.tool}`))
+        }
       }
     })
 

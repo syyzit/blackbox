@@ -194,6 +194,30 @@ T     SRC      STATUS   TOOL            MS
 `diff` accepts trace ids and ignores per-session metadata (`_meta`) so two runs that did
 the same thing do not look different just because the session id changed.
 
+## Built-in approvals
+
+In enforce mode the plugin turns a `require_approval` decision into OpenCode's permission
+prompt instead of failing the call. OpenCode's base policy allows everything, so the
+project config needs an `ask` rule for the plugin's action:
+
+```jsonc
+"permissions": [
+  { "action": "blackbox", "resource": "*", "effect": "ask" }
+]
+```
+
+Verified with a temporary enforce policy that required approval for the built-in shell:
+
+```
+$ blackbox decisions oc-ses_e6cc75419ffe
+TIME      ACTION            MODE     TOOL   REASON
+19:28:49  require_approval  enforce  shell  built-in shell needs a human
+```
+
+The command ran after approval and was recorded normally. With `--auto`, OpenCode
+auto-approves; interactively it shows the usual permission dialog. The local policy was
+returned to shadow mode afterward.
+
 ## The loop
 
 ```sh

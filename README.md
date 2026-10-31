@@ -216,6 +216,16 @@ The bundled OpenCode plugin calls `blackbox check` before every built-in tool, s
 rules apply to `write`, `edit`, and `shell` without routing them through MCP. In shadow
 mode they still run; the decision is logged as `require_approval · shadow`.
 
+In enforce mode, a built-in `require_approval` opens OpenCode's normal permission prompt
+and continues if you allow it. OpenCode's default policy allows everything, so add an
+`ask` rule for the plugin's action or the prompt is skipped:
+
+```jsonc
+"permissions": [
+  { "action": "blackbox", "resource": "*", "effect": "ask" }
+]
+```
+
 ## Ask questions across sessions
 
 ```sh
@@ -365,9 +375,8 @@ CI runs `go vet` and `go test -race` on every push.
   up as separate sessions.
 - `blackbox ingest` trusts the local caller. Anyone who can run it can add events, so it
   is an integration hook, not an authenticated API.
-- For built-in tools, `require_approval` currently fails the call with "approval required"
-  instead of showing a prompt. MCP approvals use the terminal; wiring built-ins to
-  OpenCode's permission UI is the next step.
+- Built-in approvals rely on an `ask` rule for the `blackbox` permission action. Without
+  it, OpenCode's default `*/* allow` rule approves the prompt automatically.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.
