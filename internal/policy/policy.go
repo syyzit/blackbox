@@ -157,6 +157,34 @@ type Approver interface {
 	Approve(ApprovalRequest) bool
 }
 
+// TimeoutApprover bounds how long a human has to answer. A missing or slow answer
+// is a denial, so an unattended session can never hang forever.
+type TimeoutApprover struct {
+	Inner   Approver
+	Timeout time.Duration
+}
+
+// Approve runs the inner approver with a deadline.
+func (t TimeoutApprover) Approve(r ApprovalRequest) bool {
+	if t.Inner == nil {
+		return false
+	}
+	timeout := t.Timeout
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+
+	result := make(chan bool, 1)
+	go func() { result <- t.Inner.Approve(r) }()
+
+	select {
+	case ok := <-result:
+		return ok
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // wildcard matches a glob where * matches any run of characters and ? matches one.
 func wildcard(pattern, s string) bool {
 	if pattern == "" || pattern == "*" {

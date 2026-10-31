@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/spacecr8ed/blackbox/internal/event"
@@ -102,6 +103,31 @@ func TestDiffAPI(t *testing.T) {
 	}
 	if !out.Report.Identical {
 		t.Fatal("identical session should diff clean")
+	}
+}
+
+func TestExportAPI(t *testing.T) {
+	home, id := seed(t)
+	h := New(home).Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/"+id+"/export", nil))
+	if rec.Code != 200 {
+		t.Fatalf("export status %d: %s", rec.Code, rec.Body.String())
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, id) {
+		t.Fatalf("bad content disposition: %q", cd)
+	}
+	var bundle struct {
+		Format  string        `json:"format"`
+		Session store.Meta    `json:"session"`
+		Events  []event.Event `json:"events"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Format != store.ExportFormat || bundle.Session.ID != id || len(bundle.Events) != 2 {
+		t.Fatalf("bad bundle: %+v", bundle)
 	}
 }
 

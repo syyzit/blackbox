@@ -17,14 +17,18 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 - **Normalized evidence**: method, tool, args, result, error, status, latency, size,
   token usage, cost, and the tool-definition hash each call ran under.
 - **SQLite store** (pure Go, WAL, indexed) with per-session and per-tool aggregation.
-- **Secret redaction** applied before persistence and rendering, never to the live stream.
+- **Secret redaction** applied before persistence, audit and rendering, never to the
+  live stream.
 - **Tool-definition hashing** that flags a definition changed after approval (rug-pull).
 - **Deterministic replay**: answer a live agent from a recording, offline.
 - **Run diff**: same task twice, see exactly which calls diverged.
 - **Policy gate**: allow / deny / require-approval per server, tool, and argument regex,
   with an audit log. Approvals happen on `/dev/tty`, never on the MCP stream, so an agent
   cannot answer its own prompt.
-- **Web UI**: session browser, scrubbable timeline, frame inspector, run diff.
+- **Web UI**: session browser, scrubbable timeline that follows a live recording,
+  frame inspector, run diff.
+- **Redacted export**: one JSON incident bundle per session, safe to attach to a bug
+  report.
 
 ## Install
 
@@ -72,11 +76,14 @@ blackbox sessions                       # newest first, with frame counts
 blackbox show <id>                      # timeline: direction, status, latency
 blackbox stats <id>                     # calls, errors, latency, bytes, cost
 blackbox decisions <id>                 # policy audit log
+blackbox export <id> -out incident.json # redacted incident bundle
 blackbox ui -open                       # the web interface
 ```
 
-The UI has a scrubbable timeline, `j`/`k` navigation, a frame inspector with raw / args /
-result / error / policy tabs, rug-pull and redaction badges, and a side-by-side run diff.
+The UI follows a session while it is being recorded, keeps your selected frame pinned as
+new ones arrive, and has `j`/`k` navigation, a frame inspector with raw / args / result /
+error / policy tabs, rug-pull and redaction badges, a side-by-side run diff, and an
+**Export** button for the redacted incident bundle.
 
 ## Replay and diff
 
@@ -112,8 +119,8 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 
 - `allow` forwards the call.
 - `deny` blocks it with a JSON-RPC error and records the decision.
-- `require_approval` asks on the controlling terminal; a timeout or a non-interactive
-  session denies.
+- `require_approval` asks on the controlling terminal; a timeout
+  (`-approval-timeout`, default 1m) or a non-interactive session denies.
 - When `rugPullBlock` is on, a tool whose definition hash changed since the previous run
   is denied until you intentionally re-approve it.
 
@@ -159,7 +166,7 @@ make demo    # the full tour against the bundled server
 ./scripts/demo-real.sh   # the same tour through the real filesystem MCP server
 ```
 
-CI runs `go vet` and `go test` on every push.
+CI runs `go vet` and `go test -race` on every push.
 
 ## Limitations
 
@@ -170,6 +177,8 @@ CI runs `go vet` and `go test` on every push.
 - Replay matches calls by method, tool, and arguments. A nondeterministic server that
   returns different payloads for identical calls will show up as `result_changed`.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
+- An approval prompt blocks the proxied stream while it waits, bounded by
+  `-approval-timeout`. A fully asynchronous approval queue is future work.
 - Tested against the protocol spec and the bundled fake server; real-world servers vary.
 
 ## License

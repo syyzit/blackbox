@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDecideFirstMatchWins(t *testing.T) {
@@ -82,5 +83,35 @@ func TestWildcard(t *testing.T) {
 	}
 	if wildcard("read_*", "write_file") || wildcard("a?c", "abbc") {
 		t.Fatal("wildcards should not over-match")
+	}
+}
+
+type slowApprover struct {
+	delay time.Duration
+	allow bool
+}
+
+func (s slowApprover) Approve(ApprovalRequest) bool {
+	time.Sleep(s.delay)
+	return s.allow
+}
+
+func TestTimeoutApproverDeniesSlowAnswer(t *testing.T) {
+	got := TimeoutApprover{
+		Inner:   slowApprover{delay: 200 * time.Millisecond, allow: true},
+		Timeout: 20 * time.Millisecond,
+	}.Approve(ApprovalRequest{Tool: "write_file"})
+	if got {
+		t.Fatal("a slow answer must be a denial")
+	}
+}
+
+func TestTimeoutApproverPassesFastAnswer(t *testing.T) {
+	got := TimeoutApprover{
+		Inner:   slowApprover{delay: time.Millisecond, allow: true},
+		Timeout: time.Second,
+	}.Approve(ApprovalRequest{Tool: "write_file"})
+	if !got {
+		t.Fatal("a fast yes must be honoured")
 	}
 }

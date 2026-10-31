@@ -8,6 +8,7 @@ import (
 	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/policy"
 	"github.com/spacecr8ed/blackbox/internal/proxy"
+	"github.com/spacecr8ed/blackbox/internal/redact"
 )
 
 type memAudit struct {
@@ -191,5 +192,41 @@ func TestRugPullBlocksChangedTool(t *testing.T) {
 	}
 	if len(audit.snapshot()) == 0 {
 		t.Fatal("rug-pull denial was not audited")
+	}
+}
+
+func TestAuditArgsAreRedacted(t *testing.T) {
+	const secret = "sk-livekey0123456789abcdef"
+
+	audit := &memAudit{}
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink:      &memSink{},
+		Redactor:  redact.Default(),
+		Policy:    denyPolicy("echo"),
+		Server:    "fake-server",
+		ServerKey: "srvkey",
+		Ledger:    newMapLedger(),
+		Audit:     audit,
+	})
+
+	if _, err := cli.Call("tools/call", map[string]any{
+		"name":      "echo",
+		"arguments": map[string]any{"text": secret},
+	}); err == nil {
+		t.Fatal("expected the call to be denied")
+	}
+	stop(t, cli, errCh)
+
+	recs := audit.snapshot()
+	if len(recs) == 0 {
+		t.Fatal("no audit record")
+	}
+	for _, r := range recs {
+		if strings.Contains(r.Args, secret) {
+			t.Fatalf("secret leaked into the audit log: %+v", r)
+		}
+	}
+	if !strings.Contains(recs[0].Args, "[REDACTED") {
+		t.Fatalf("audit args were not redacted: %s", recs[0].Args)
 	}
 }

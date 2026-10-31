@@ -62,10 +62,19 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
-	id = strings.Trim(id, "/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/sessions/"), "/")
+	parts := strings.Split(rest, "/")
+	if rest == "" || len(parts) > 2 {
 		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	id := parts[0]
+	if len(parts) == 2 {
+		if parts[1] != "export" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		s.handleExport(w, id)
 		return
 	}
 
@@ -144,6 +153,16 @@ func Serve(ctx context.Context, home, addr string) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+func (s *Server) handleExport(w http.ResponseWriter, id string) {
+	bundle, err := store.Export(s.Home, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="blackbox-`+bundle.Session.ID+`.json"`)
+	writeJSON(w, bundle)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

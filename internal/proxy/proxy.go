@@ -294,12 +294,23 @@ func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 
 	if p.audit != nil {
 		_ = p.audit.Record(policy.DecisionRecord{
-			Server: p.server, Tool: req.Tool, Args: req.Args,
+			Server: p.server, Tool: req.Tool, Args: auditArgs(p.red, req.Args),
 			Action: dec.Action, Approved: approved, Reason: dec.Reason,
 			At: time.Now().UTC(),
 		})
 	}
 	return dec, dec.Action == policy.Deny
+}
+
+// auditArgs is the only copy of the arguments that leaves the process for the audit
+// log, so it is redacted and bounded even though policy matching used the raw value.
+func auditArgs(red *redact.Redactor, args string) string {
+	out := red.String(args)
+	const max = 4096
+	if len(out) > max {
+		out = out[:max] + "…"
+	}
+	return out
 }
 
 func (p *pipeline) isRugPulled(tool string) bool {

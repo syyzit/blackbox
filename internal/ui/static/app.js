@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
 
+let lastSignature = "";
+
 const state = {
   sessions: [],
   meta: null,
@@ -105,7 +107,42 @@ async function openSession(id) {
     state.decisions = data.decisions || [];
     state.selected = state.events.length ? 0 : -1;
     state.tab = "raw";
+    lastSignature = signature(data);
     renderSessions();
+    renderAll();
+    updateDiffButton();
+    $("exportBtn").disabled = false;
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function signature(data) {
+  return `${data.events ? data.events.length : 0}:${data.stats ? data.stats.calls : 0}:${
+    data.decisions ? data.decisions.length : 0
+  }`;
+}
+
+// Follow a session while it is being recorded. The selection is pinned by sequence
+// number, so incoming frames never move the frame the user is reading.
+async function refreshCurrent() {
+  if (!state.meta || document.hidden) return;
+  const id = state.meta.id;
+  const prevSeq = state.events[state.selected] ? state.events[state.selected].seq : null;
+  try {
+    const data = await api("/api/sessions/" + encodeURIComponent(id));
+    if (!state.meta || state.meta.id !== id) return;
+    const sig = signature(data);
+    if (sig === lastSignature) return;
+    lastSignature = sig;
+
+    state.events = data.events || [];
+    state.stats = data.stats;
+    state.decisions = data.decisions || [];
+    if (prevSeq != null) {
+      const idx = state.events.findIndex((e) => e.seq === prevSeq);
+      state.selected = idx >= 0 ? idx : Math.min(state.selected, Math.max(0, state.events.length - 1));
+    }
     renderAll();
     updateDiffButton();
   } catch (err) {
@@ -307,6 +344,10 @@ function bind() {
     renderTimeline();
   });
   $("diffBtn").addEventListener("click", showDiff);
+  $("exportBtn").addEventListener("click", () => {
+    if (!state.meta) return;
+    window.location.href = "/api/sessions/" + encodeURIComponent(state.meta.id) + "/export";
+  });
   $("closeDiff").addEventListener("click", () => $("diffModal").classList.add("hidden"));
   $("diffModal").addEventListener("click", (e) => {
     if (e.target.id === "diffModal") $("diffModal").classList.add("hidden");
@@ -332,3 +373,4 @@ function bind() {
 bind();
 loadSessions();
 setInterval(loadSessions, 5000);
+setInterval(refreshCurrent, 2000);

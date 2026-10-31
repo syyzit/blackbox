@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -48,6 +49,8 @@ func run(args []string) int {
 		return cmdDiff(args[1:])
 	case "decisions":
 		return cmdDecisions(args[1:])
+	case "export":
+		return cmdExport(args[1:])
 	case "ui":
 		return cmdUI(args[1:])
 	case "http":
@@ -91,6 +94,9 @@ Usage:
   blackbox decisions [-home dir] <session-id|prefix>
         Print the policy audit log for a session.
 
+  blackbox export [-home dir] [-out file] <session-id|prefix>
+        Write a redacted incident bundle (JSON) for a session.
+
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.
 
@@ -100,7 +106,11 @@ Usage:
   blackbox version
 
 Flags for run:
-  -home string   data directory (default ~/.blackbox, or $BLACKBOX_HOME)
+  -home string              data directory (default ~/.blackbox, or $BLACKBOX_HOME)
+  -policy string            policy file (default <home>/policy.json)
+  -price-in float           USD per million input tokens, for reported usage
+  -price-out float          USD per million output tokens, for reported usage
+  -approval-timeout dur     deny an unanswered approval (default 1m)
 
 Examples:
   blackbox run -- npx -y @modelcontextprotocol/server-filesystem ~/notes
@@ -114,6 +124,7 @@ func cmdRun(args []string) int {
 	policyPath := fs.String("policy", "", "policy file (default: <home>/policy.json)")
 	priceIn := fs.Float64("price-in", 0, "USD per million input tokens, for reported usage")
 	priceOut := fs.Float64("price-out", 0, "USD per million output tokens, for reported usage")
+	approvalTimeout := fs.Duration("approval-timeout", time.Minute, "how long to wait for an approval before denying")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -154,7 +165,7 @@ func cmdRun(args []string) int {
 		Server:          strings.Join(argv, " "),
 		ServerKey:       sess.Meta.ServerKey,
 		Ledger:          sess.Ledger(),
-		Approver:        terminalApprover{},
+		Approver:        timeoutApprover(*approvalTimeout),
 		Audit:           sess,
 	})
 	if err != nil {
@@ -205,6 +216,7 @@ func cmdHTTP(args []string) int {
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	home := fs.String("home", "", "data directory")
 	policyPath := fs.String("policy", "", "policy file (default: <home>/policy.json)")
+	approvalTimeout := fs.Duration("approval-timeout", time.Minute, "how long to wait for an approval before denying")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -242,7 +254,7 @@ func cmdHTTP(args []string) int {
 		Server:    *upstream,
 		ServerKey: sess.Meta.ServerKey,
 		Ledger:    sess.Ledger(),
-		Approver:  terminalApprover{},
+		Approver:  timeoutApprover(*approvalTimeout),
 		Audit:     sess,
 	})
 	if err != nil {
@@ -260,6 +272,10 @@ func loadPolicy(home, path string) (*policy.Policy, error) {
 		}
 	}
 	return policy.Load(path)
+}
+
+func timeoutApprover(timeout time.Duration) policy.Approver {
+	return policy.TimeoutApprover{Inner: terminalApprover{}, Timeout: timeout}
 }
 
 // terminalApprover asks on /dev/tty, never on the MCP stream, so the agent cannot
@@ -285,6 +301,46 @@ func (terminalApprover) Approve(r policy.ApprovalRequest) bool {
 	}
 	line = strings.ToLower(strings.TrimSpace(line))
 	return line == "y" || line == "yes"
+}
+
+func cmdExport(args []string) int {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	out := fs.String("out", "", "output file (default stdout)")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "blackbox export: missing session id")
+		return 2
+	}
+
+	bundle, err := store.Export(*home, fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	data = append(data, '\n')
+
+	if *out == "" {
+		_, err = os.Stdout.Write(data)
+	} else {
+		err = os.WriteFile(*out, data, 0o644)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	if *out != "" {
+		fmt.Fprintf(os.Stderr, "blackbox · wrote %s (%d events, %d decisions)\n", *out, len(bundle.Events), len(bundle.Decisions))
+	}
+	return 0
 }
 
 func cmdDecisions(args []string) int {
