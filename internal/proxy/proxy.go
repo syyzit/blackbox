@@ -188,8 +188,9 @@ type pipeline struct {
 	toolHashes  map[string]string
 	toolHashMu  sync.Mutex
 
-	mu      sync.Mutex
-	pending map[string]call
+	mu            sync.Mutex
+	pending       map[string]call // client-initiated requests awaiting a response
+	serverPending map[string]call // legacy server-initiated requests awaiting a client reply
 
 	callMu     sync.Mutex
 	openStates map[string]string     // MRTR requestState -> call id
@@ -198,23 +199,24 @@ type pipeline struct {
 
 func newPipeline(c pipelineConfig) *pipeline {
 	return &pipeline{
-		sessionID:  c.SessionID,
-		sink:       c.Sink,
-		red:        c.Redactor,
-		priceIn:    c.PriceIn,
-		priceOut:   c.PriceOut,
-		agentOut:   c.AgentOut,
-		policy:     c.Policy,
-		server:     c.Server,
-		serverKey:  c.ServerKey,
-		ledger:     c.Ledger,
-		approver:   c.Approver,
-		audit:      c.Audit,
-		rugPulled:  map[string]bool{},
-		toolHashes: map[string]string{},
-		pending:    make(map[string]call),
-		openStates: make(map[string]string),
-		openKeys:   make(map[string][]openCall),
+		sessionID:     c.SessionID,
+		sink:          c.Sink,
+		red:           c.Redactor,
+		priceIn:       c.PriceIn,
+		priceOut:      c.PriceOut,
+		agentOut:      c.AgentOut,
+		policy:        c.Policy,
+		server:        c.Server,
+		serverKey:     c.ServerKey,
+		ledger:        c.Ledger,
+		approver:      c.Approver,
+		audit:         c.Audit,
+		rugPulled:     map[string]bool{},
+		toolHashes:    map[string]string{},
+		pending:       make(map[string]call),
+		serverPending: make(map[string]call),
+		openStates:    make(map[string]string),
+		openKeys:      make(map[string][]openCall),
 	}
 }
 
@@ -458,7 +460,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 	isNotification := msg.IsNotification() || (hint.method != "" && len(msg.ID) == 0)
 
 	switch {
-	case isRequest:
+	case isRequest && dir == event.ClientToServer:
 		e.Method = method
 		e.Tool = tool
 		e.ID = msg.IDString()
@@ -478,6 +480,22 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		}
 		p.mu.Unlock()
 
+	case isRequest && dir == event.ServerToClient:
+		// Legacy MCP servers can ask the client for roots, sampling, or elicitation.
+		// These are requests in the opposite direction and must not share the
+		// client-request correlation table.
+		e.Method = method
+		e.Tool = tool
+		e.ID = msg.IDString()
+		if e.Status == "" {
+			e.Status = event.StatusPending
+		}
+		e.Args = p.red.String(compact(msg.Params))
+
+		p.mu.Lock()
+		p.serverPending[e.ID] = call{method: e.Method, tool: e.Tool, at: e.At}
+		p.mu.Unlock()
+
 	case isNotification:
 		e.Method = method
 		e.Tool = tool
@@ -487,9 +505,16 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 	case msg.IsResponse():
 		e.ID = msg.IDString()
 		p.mu.Lock()
-		c, ok := p.pending[e.ID]
-		if ok {
+		var (
+			c  call
+			ok bool
+		)
+		if dir == event.ServerToClient {
+			c, ok = p.pending[e.ID]
 			delete(p.pending, e.ID)
+		} else {
+			c, ok = p.serverPending[e.ID]
+			delete(p.serverPending, e.ID)
 		}
 		p.mu.Unlock()
 		if ok {

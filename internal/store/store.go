@@ -385,7 +385,9 @@ func StatsFor(home, prefix string) (Stats, error) {
 		        COALESCE(MAX(duration_ms), 0),
 		        COALESCE(SUM(size), 0),
 		        COALESCE(SUM(cost_usd), 0)
-		   FROM events WHERE session_id = ? AND direction = 's2c'`, id,
+		   FROM events
+		  WHERE session_id = ? AND direction = 's2c'
+		    AND status IN ('ok','tool_error','error','input_required')`, id,
 	).Scan(&s.Calls, &s.Errors, &s.TotalMS, &avg, &s.MaxMS, &s.Bytes, &s.CostUSD)
 	if err != nil {
 		return Stats{}, err

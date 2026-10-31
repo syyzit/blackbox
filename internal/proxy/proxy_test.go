@@ -3,6 +3,7 @@ package proxy_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -19,6 +20,11 @@ import (
 
 // TestHelperProcess doubles as the MCP server when re-executed by the test binary.
 func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_LEGACY_SERVER") == "1" {
+		fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","id":99,"method":"roots/list"}`)
+		_ = mcptest.NewServer().Serve(os.Stdin, os.Stdout)
+		os.Exit(0)
+	}
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
@@ -59,6 +65,11 @@ func startProxied(t *testing.T, sink event.Sink, red *redact.Redactor, extraEnv 
 
 func startProxiedOpts(t *testing.T, o proxy.Options, extraEnv ...string) (*mcptest.Client, chan error) {
 	t.Helper()
+	return startProxiedHandler(t, o, nil, extraEnv...)
+}
+
+func startProxiedHandler(t *testing.T, o proxy.Options, handler mcptest.RequestHandler, extraEnv ...string) (*mcptest.Client, chan error) {
+	t.Helper()
 
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -77,7 +88,7 @@ func startProxiedOpts(t *testing.T, o proxy.Options, extraEnv ...string) (*mcpte
 
 	go func() { errCh <- proxy.RunStdio(context.Background(), o) }()
 
-	return mcptest.NewClient(inW, outR), errCh
+	return mcptest.NewClientWithHandler(inW, outR, handler), errCh
 }
 
 func stop(t *testing.T, cli *mcptest.Client, errCh chan error) {

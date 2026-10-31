@@ -32,6 +32,11 @@ func TestEventsPersistAndAggregate(t *testing.T) {
 		Direction: event.ServerToClient, Method: "tools/call", Tool: "fail", ID: "2",
 		Status: event.StatusToolError, DurationMS: 8, Size: 50, Raw: `{"id":2}`,
 	})
+	// A legacy server-initiated request is not a call and must not inflate the count.
+	emit(event.Event{
+		Direction: event.ServerToClient, Method: "roots/list", ID: "srv-1",
+		Status: event.StatusPending, Size: 10, Raw: `{"id":"srv-1"}`,
+	})
 	if err := sess.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +48,8 @@ func TestEventsPersistAndAggregate(t *testing.T) {
 	if meta.ID != id {
 		t.Fatalf("resolved wrong session: %s != %s", meta.ID, id)
 	}
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d", len(events))
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
 	}
 	if events[0].Seq != 1 || events[2].Seq != 3 {
 		t.Fatalf("sequence was not preserved: %+v", events)
@@ -83,7 +88,7 @@ func TestEventsPersistAndAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Events != 3 {
+	if len(list) != 1 || list[0].Events != 4 {
 		t.Fatalf("list did not count events: %+v", list)
 	}
 }

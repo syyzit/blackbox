@@ -14,13 +14,18 @@ import (
 	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
 )
 
+// RequestHandler answers server-initiated requests in tests.
+type RequestHandler func(method string, params json.RawMessage) (any, error)
+
 // Client is a tiny MCP client for driving a proxied server in tests.
 type Client struct {
-	w       io.WriteCloser
-	cmd     *exec.Cmd
-	lines   chan []byte
-	readErr chan error
+	w         io.WriteCloser
+	cmd       *exec.Cmd
+	lines     chan []byte
+	readErr   chan error
+	onRequest RequestHandler
 
+	writeMu sync.Mutex
 	mu      sync.Mutex
 	nextID  int64
 	timeout time.Duration
@@ -28,11 +33,17 @@ type Client struct {
 
 // NewClient talks over an existing stream pair.
 func NewClient(w io.WriteCloser, r io.Reader) *Client {
+	return NewClientWithHandler(w, r, nil)
+}
+
+// NewClientWithHandler also answers server-initiated requests.
+func NewClientWithHandler(w io.WriteCloser, r io.Reader, handler RequestHandler) *Client {
 	c := &Client{
-		w:       w,
-		lines:   make(chan []byte, 32),
-		readErr: make(chan error, 1),
-		timeout: 10 * time.Second,
+		onRequest: handler,
+		w:         w,
+		lines:     make(chan []byte, 32),
+		readErr:   make(chan error, 1),
+		timeout:   10 * time.Second,
 	}
 	go c.readLoop(r)
 	return c
@@ -63,6 +74,13 @@ func (c *Client) readLoop(r io.Reader) {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for sc.Scan() {
 		line := append([]byte(nil), sc.Bytes()...)
+		if c.onRequest != nil {
+			var msg jsonrpc.Message
+			if err := json.Unmarshal(line, &msg); err == nil && msg.IsRequest() {
+				go c.answer(&msg)
+				continue
+			}
+		}
 		c.lines <- line
 	}
 	if err := sc.Err(); err != nil {
@@ -72,8 +90,25 @@ func (c *Client) readLoop(r io.Reader) {
 
 // Send writes one raw frame, adding the trailing newline.
 func (c *Client) Send(line []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	_, err := c.w.Write(append(line, '\n'))
 	return err
+}
+
+func (c *Client) answer(req *jsonrpc.Message) {
+	result, err := c.onRequest(req.Method, req.Params)
+	payload := map[string]any{"jsonrpc": "2.0", "id": req.ID}
+	if err != nil {
+		payload["error"] = map[string]any{"code": -32603, "message": err.Error()}
+	} else {
+		payload["result"] = result
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = c.Send(b)
 }
 
 // Next returns the next frame from the server.
