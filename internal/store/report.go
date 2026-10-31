@@ -22,6 +22,7 @@ type ReportRow struct {
 	Calls   int
 	Errors  int
 	Blocked int
+	Would   int
 	AvgMS   int64
 	P95MS   int64
 	MaxMS   int64
@@ -33,6 +34,7 @@ type reportAcc struct {
 	calls     int
 	errors    int
 	blocked   int
+	would     int
 	durations []int64
 	bytes     int64
 	cost      float64
@@ -114,9 +116,9 @@ func Report(home string, opts ReportOptions) ([]ReportRow, error) {
 	rows.Close()
 
 	blocked, err := db.Query(
-		`SELECT d.at, d.tool, s.argv
+		`SELECT d.at, d.tool, d.action, d.mode, s.argv
 		   FROM policy_decisions d JOIN sessions s ON s.id = d.session_id
-		  WHERE d.action = 'deny' AND (? = 0 OR d.at >= ?)`, cutoff, cutoff)
+		  WHERE (? = 0 OR d.at >= ?)`, cutoff, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -124,13 +126,23 @@ func Report(home string, opts ReportOptions) ([]ReportRow, error) {
 		var (
 			at       int64
 			tool     string
+			action   string
+			mode     string
 			argvJSON string
 		)
-		if err := blocked.Scan(&at, &tool, &argvJSON); err != nil {
+		if err := blocked.Scan(&at, &tool, &action, &mode, &argvJSON); err != nil {
 			blocked.Close()
 			return nil, err
 		}
-		get(reportKey(by, time.UnixMilli(at), tool, decodeArgv(argvJSON))).blocked++
+		acc := get(reportKey(by, time.UnixMilli(at), tool, decodeArgv(argvJSON)))
+		switch {
+		case mode == "shadow":
+			if action == "deny" || action == "require_approval" {
+				acc.would++
+			}
+		case action == "deny":
+			acc.blocked++
+		}
 	}
 	if err := blocked.Err(); err != nil {
 		blocked.Close()
@@ -141,7 +153,7 @@ func Report(home string, opts ReportOptions) ([]ReportRow, error) {
 	out := make([]ReportRow, 0, len(accs))
 	for key, a := range accs {
 		row := ReportRow{
-			Key: key, Calls: a.calls, Errors: a.errors, Blocked: a.blocked,
+			Key: key, Calls: a.calls, Errors: a.errors, Blocked: a.blocked, Would: a.would,
 			Bytes: a.bytes, CostUSD: a.cost,
 		}
 		if len(a.durations) > 0 {

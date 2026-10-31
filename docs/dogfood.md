@@ -147,6 +147,33 @@ shell call is `unverified`; everything else is `unrecorded`.
 The window is the MCP connection, not the agent turn, for the same reason sessions are:
 OpenCode keeps the server process alive across prompts.
 
+## Shadow mode in practice
+
+Before enforcing rules on built-ins, run the policy in `~/.blackbox/policy.json` with
+`"mode": "shadow"`. The plugin calls `blackbox check` for every built-in tool, the proxy
+checks every MCP call, and both only record what would have happened.
+
+A real built-in shell call under a `require_approval` rule:
+
+```
+$ blackbox decisions oc-ses_e6ce59bc9ffe
+TIME      ACTION            MODE    APPROVED  TOOL   REASON
+18:55:44  require_approval  shadow  false     shell  built-in shell
+```
+
+The command still ran and its output was returned. The same rule against the MCP shell
+server:
+
+```
+18:56:00  require_approval  shadow  false  run_command  MCP shell (shadow: not enforced)
+```
+
+`blackbox report` gains a `WOULD` column so shadow candidates are visible next to enforced
+blocks. Once a rule looks relevant, change `mode` to `enforce`; nothing else moves.
+
+Note: editing the plugin source does not hot-reload it. Touching `opencode.json` reloads
+the plugin; the proxy picks up a new policy on its next connection.
+
 ## The loop
 
 ```sh

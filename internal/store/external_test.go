@@ -6,6 +6,7 @@ import (
 
 	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/spacecr8ed/blackbox/internal/policy"
 )
 
 func TestAppendExternalContinuesSequence(t *testing.T) {
@@ -47,6 +48,25 @@ func TestAppendExternalContinuesSequence(t *testing.T) {
 	}
 	if len(stored) != 4 || stored[3].Seq != 4 {
 		t.Fatalf("sequence did not continue: %+v", stored)
+	}
+}
+
+func TestRecordExternalDecision(t *testing.T) {
+	home := t.TempDir()
+	err := RecordExternalDecision(home, "ses_dec", policy.DecisionRecord{
+		Server: "opencode", Tool: "shell", Action: policy.RequireApproval,
+		Mode: policy.ModeShadow, Reason: "built-in shell", At: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The caller knows the OpenCode session id, not our oc- prefix.
+	recs, err := Decisions(home, "ses_dec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Mode != policy.ModeShadow || recs[0].Tool != "shell" {
+		t.Fatalf("decision round trip failed: %+v", recs)
 	}
 }
 

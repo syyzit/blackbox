@@ -156,15 +156,26 @@ func (s *Session) Record(d policy.DecisionRecord) error {
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO policy_decisions (session_id, at, server, tool, args, action, approved, reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		s.Meta.ID, at.UnixMilli(), d.Server, d.Tool, d.Args, string(d.Action), boolInt(d.Approved), d.Reason,
-	)
-	if err != nil {
+	if err := insertDecision(s.db, s.Meta.ID, d); err != nil {
 		return fmt.Errorf("store: record decision: %w", err)
 	}
 	return nil
+}
+
+func insertDecision(db execer, sessionID string, d policy.DecisionRecord) error {
+	if d.Mode == "" {
+		d.Mode = policy.ModeEnforce
+	}
+	at := d.At
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	_, err := db.Exec(
+		`INSERT INTO policy_decisions (session_id, at, server, tool, args, action, mode, approved, reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, at.UnixMilli(), d.Server, d.Tool, d.Args, string(d.Action), string(d.Mode), boolInt(d.Approved), d.Reason,
+	)
+	return err
 }
 
 // Decisions returns the audit log for a session.
@@ -180,7 +191,7 @@ func Decisions(home, prefix string) ([]policy.DecisionRecord, error) {
 		return nil, err
 	}
 	rows, err := db.Query(
-		`SELECT at, server, tool, args, action, approved, reason
+		`SELECT at, server, tool, args, action, mode, approved, reason
 		   FROM policy_decisions WHERE session_id = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
@@ -193,14 +204,16 @@ func Decisions(home, prefix string) ([]policy.DecisionRecord, error) {
 			d        policy.DecisionRecord
 			at       int64
 			action   string
+			mode     string
 			approved int
 		)
-		if err := rows.Scan(&at, &d.Server, &d.Tool, &d.Args, &action, &approved, &d.Reason); err != nil {
+		if err := rows.Scan(&at, &d.Server, &d.Tool, &d.Args, &action, &mode, &approved, &d.Reason); err != nil {
 			return nil, err
 		}
 		d.SessionID = id
 		d.At = time.UnixMilli(at).UTC()
 		d.Action = policy.Action(action)
+		d.Mode = policy.Mode(mode)
 		d.Approved = approved != 0
 		out = append(out, d)
 	}
@@ -531,6 +544,7 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
   tool        TEXT NOT NULL DEFAULT '',
   args        TEXT NOT NULL DEFAULT '',
   action      TEXT NOT NULL DEFAULT '',
+  mode        TEXT NOT NULL DEFAULT 'enforce',
   approved    INTEGER NOT NULL DEFAULT 0,
   reason      TEXT NOT NULL DEFAULT ''
 );
@@ -599,6 +613,7 @@ func migrate(db *sql.DB) error {
 		{"events", "cost_usd", `ALTER TABLE events ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`},
 		{"events", "call_id", `ALTER TABLE events ADD COLUMN call_id TEXT NOT NULL DEFAULT ''`},
 		{"events", "subscription_id", `ALTER TABLE events ADD COLUMN subscription_id TEXT NOT NULL DEFAULT ''`},
+		{"policy_decisions", "mode", `ALTER TABLE policy_decisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'enforce'`},
 	} {
 		ok, err := hasColumn(db, add.table, add.column)
 		if err != nil {
@@ -659,7 +674,9 @@ func resolveID(db *sql.DB, prefix string) (string, error) {
 	if prefix == "" {
 		return "", errors.New("store: empty session id")
 	}
-	rows, err := db.Query(`SELECT id FROM sessions WHERE id = ? OR id LIKE ? LIMIT 2`, prefix, prefix+"%")
+	rows, err := db.Query(
+		`SELECT id FROM sessions WHERE id = ? OR id LIKE ? OR id LIKE ? LIMIT 4`,
+		prefix, prefix+"%", "oc-"+prefix+"%")
 	if err != nil {
 		return "", err
 	}

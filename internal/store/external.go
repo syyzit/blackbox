@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/spacecr8ed/blackbox/internal/policy"
 )
 
 var badExternalChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
@@ -41,7 +42,6 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 	defer db.Close()
 
 	id := ExternalID("oc-", sessionID)
-	host, _ := os.Hostname()
 	now := time.Now().UTC()
 	startedAt := now
 	for _, e := range events {
@@ -50,11 +50,7 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 		}
 	}
 
-	if _, err := db.Exec(
-		`INSERT OR IGNORE INTO sessions (id, started_at, argv, pid, hostname, server_key)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		id, startedAt.UnixMilli(), mustJSON(argv), os.Getpid(), host, ServerKey(argv),
-	); err != nil {
+	if err := ensureExternalSession(db, id, argv, startedAt); err != nil {
 		return err
 	}
 
@@ -80,6 +76,36 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 		}
 	}
 	return tx.Commit()
+}
+
+// RecordExternalDecision records a policy decision for an external session, creating
+// the session row if this is the first thing the plugin reports.
+func RecordExternalDecision(home, sessionID string, d policy.DecisionRecord) error {
+	home = Home(home)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	db, err := openDB(filepath.Join(home, "blackbox.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	id := ExternalID("oc-", sessionID)
+	if err := ensureExternalSession(db, id, []string{"opencode", "builtins"}, time.Now().UTC()); err != nil {
+		return err
+	}
+	return insertDecision(db, id, d)
+}
+
+func ensureExternalSession(db *sql.DB, id string, argv []string, startedAt time.Time) error {
+	host, _ := os.Hostname()
+	_, err := db.Exec(
+		`INSERT OR IGNORE INTO sessions (id, started_at, argv, pid, hostname, server_key)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, startedAt.UnixMilli(), mustJSON(argv), os.Getpid(), host, ServerKey(argv),
+	)
+	return err
 }
 
 // EventsBetween returns every event recorded in a time window, across sessions.

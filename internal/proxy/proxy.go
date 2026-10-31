@@ -282,17 +282,19 @@ func (p *pipeline) gate(line []byte) (*jsonrpc.Message, *policy.Decision, bool) 
 func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 	req := policy.Request{Server: p.server, Tool: msg.ToolName(), Args: string(msg.Params)}
 	dec := p.policy.Decide(req)
+	shadow := dec.Mode == policy.ModeShadow
 
 	if dec.Action == policy.Allow && p.isRugPulled(req.Tool) {
 		dec = policy.Decision{
 			Action: policy.Deny,
+			Mode:   dec.Mode,
 			Rule:   -1,
 			Reason: "tool definition changed since it was last approved",
 		}
 	}
 
 	approved := false
-	if dec.Action == policy.RequireApproval {
+	if dec.Action == policy.RequireApproval && !shadow {
 		if p.approver != nil {
 			approved = p.approver.Approve(policy.ApprovalRequest{
 				Server: p.server, Tool: req.Tool, Args: req.Args, Reason: dec.Reason,
@@ -307,14 +309,18 @@ func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 		}
 	}
 
+	if shadow {
+		dec.Reason += " (shadow: not enforced)"
+	}
+
 	if p.audit != nil {
 		_ = p.audit.Record(policy.DecisionRecord{
 			Server: p.server, Tool: req.Tool, Args: auditArgs(p.red, req.Args),
-			Action: dec.Action, Approved: approved, Reason: dec.Reason,
+			Action: dec.Action, Mode: dec.Mode, Approved: approved, Reason: dec.Reason,
 			At: time.Now().UTC(),
 		})
 	}
-	return dec, dec.Action == policy.Deny
+	return dec, dec.Action == policy.Deny && !shadow
 }
 
 // auditArgs is the only copy of the arguments that leaves the process for the audit
@@ -433,7 +439,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 	if dec != nil {
 		e.Decision = string(dec.Action)
 		e.DecisionReason = dec.Reason
-		if dec.Action == policy.Deny {
+		if dec.Action == policy.Deny && dec.Mode != policy.ModeShadow {
 			e.Status = event.StatusDenied
 		}
 	}

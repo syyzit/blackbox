@@ -1,6 +1,7 @@
 {
-  "$comment": "Copy to ~/.blackbox/policy.json. First matching rule wins.",
+  "$comment": "Copy to ~/.blackbox/policy.json. First matching rule wins. Start with mode=shadow; switch to enforce when the log looks right.",
   "default": "allow",
+  "mode": "shadow",
   "rugPullBlock": true,
   "rules": [
     {

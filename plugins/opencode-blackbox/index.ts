@@ -22,26 +22,43 @@ type ToolEvent = {
   error?: { message?: string }
 }
 
-function send(bin: string, payload: unknown): Promise<void> {
+function run(bin: string, args: string[], body: string): Promise<{ code: number; message: string }> {
   return new Promise((resolve) => {
-    let body: string
+    let message = ""
     try {
-      body = JSON.stringify(payload)
-    } catch {
-      resolve()
-      return
-    }
+      const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] })
+      const timer = setTimeout(() => {
+        try {
+          child.kill()
+        } catch {}
+      }, 3000)
 
-    try {
-      const child = spawn(bin, ["ingest"], { stdio: ["pipe", "ignore", "ignore"] })
-      child.on("error", () => resolve())
-      child.on("close", () => resolve())
+      child.stdout.on("data", (chunk) => (message += String(chunk)))
+      child.stderr.on("data", (chunk) => (message += String(chunk)))
+      child.on("error", () => {
+        clearTimeout(timer)
+        resolve({ code: 0, message: "" }) // fail open: a missing binary must not brick the agent
+      })
+      child.on("close", (code) => {
+        clearTimeout(timer)
+        resolve({ code: code ?? 0, message: message.trim() })
+      })
       child.stdin.on("error", () => {})
       child.stdin.end(body)
     } catch {
-      resolve()
+      resolve({ code: 0, message: "" })
     }
   })
+}
+
+function send(bin: string, payload: unknown): Promise<void> {
+  let body: string
+  try {
+    body = JSON.stringify(payload)
+  } catch {
+    return Promise.resolve()
+  }
+  return run(bin, ["ingest"], body).then(() => undefined)
 }
 
 export default {
@@ -64,8 +81,24 @@ export default {
     }
     const skip = [...prefixes]
 
-    await ctx.tool.hook("execute.before", (event: ToolEvent) => {
+    await ctx.tool.hook("execute.before", async (event: ToolEvent) => {
       started.set(event.id, Date.now())
+      if (skip.some((prefix) => event.tool.startsWith(prefix))) return
+
+      const check = await run(
+        bin,
+        ["check"],
+        JSON.stringify({
+          v: 1,
+          sessionId: event.sessionID,
+          tool: event.tool,
+          agent: event.agent,
+          input: event.input ?? {},
+        }),
+      )
+      if (check.code !== 0) {
+        throw new Error(check.message || `blackbox policy blocked ${event.tool}`)
+      }
     })
 
     await ctx.tool.hook("execute.after", async (event: ToolEvent) => {

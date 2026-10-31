@@ -195,6 +195,45 @@ func TestRugPullBlocksChangedTool(t *testing.T) {
 	}
 }
 
+func shadowPolicy(tool string) *policy.Policy {
+	p := denyPolicy(tool)
+	p.Mode = policy.ModeShadow
+	return p
+}
+
+func TestShadowPolicyRecordsWithoutBlocking(t *testing.T) {
+	sink := &memSink{}
+	audit := &memAudit{}
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink: sink, Policy: shadowPolicy("fail"), Server: "fake-server",
+		ServerKey: "srvkey", Ledger: newMapLedger(), Audit: audit,
+	})
+
+	res, err := cli.Call("tools/call", map[string]any{"name": "fail", "arguments": map[string]any{}})
+	if err != nil {
+		t.Fatalf("shadow mode must not block: %v", err)
+	}
+	if !strings.Contains(string(res), "intentional failure") {
+		t.Fatalf("tool did not run: %s", res)
+	}
+	stop(t, cli, errCh)
+
+	for _, e := range sink.snapshot() {
+		if e.Direction == event.ClientToServer && e.Tool == "fail" {
+			if e.Status == event.StatusDenied {
+				t.Fatalf("shadow mode marked the call denied: %+v", e)
+			}
+			if e.Decision != string(policy.Deny) {
+				t.Fatalf("intended decision not recorded: %+v", e)
+			}
+		}
+	}
+	recs := audit.snapshot()
+	if len(recs) == 0 || recs[0].Mode != policy.ModeShadow {
+		t.Fatalf("audit mode is wrong: %+v", recs)
+	}
+}
+
 func TestAuditArgsAreRedacted(t *testing.T) {
 	const secret = "sk-livekey0123456789abcdef"
 

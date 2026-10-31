@@ -45,19 +45,20 @@ func cmdReport(args []string) int {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "%s\tCALLS\tERRORS\tBLOCKED\tAVG\tP95\tMAX\tBYTES\tCOST\n", label)
+	fmt.Fprintf(w, "%s\tCALLS\tERRORS\tBLOCKED\tWOULD\tAVG\tP95\tMAX\tBYTES\tCOST\n", label)
 	var totals store.ReportRow
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%dms\t%dms\t%dms\t%s\t$%.3f\n",
-			truncate(r.Key, 40), r.Calls, r.Errors, r.Blocked,
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%dms\t%dms\t%dms\t%s\t$%.3f\n",
+			truncate(r.Key, 40), r.Calls, r.Errors, r.Blocked, r.Would,
 			r.AvgMS, r.P95MS, r.MaxMS, humanBytes(r.Bytes), r.CostUSD)
 		totals.Calls += r.Calls
 		totals.Errors += r.Errors
 		totals.Blocked += r.Blocked
+		totals.Would += r.Would
 		totals.Bytes += r.Bytes
 		totals.CostUSD += r.CostUSD
 	}
-	fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t\t\t\t%s\t$%.3f\n",
-		totals.Calls, totals.Errors, totals.Blocked, humanBytes(totals.Bytes), totals.CostUSD)
+	fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t%d\t\t\t\t%s\t$%.3f\n",
+		totals.Calls, totals.Errors, totals.Blocked, totals.Would, humanBytes(totals.Bytes), totals.CostUSD)
 	return flush(w)
 }

@@ -70,6 +70,8 @@ func run(args []string) int {
 		return cmdCoverage(args[1:])
 	case "ingest":
 		return cmdIngest(args[1:])
+	case "check":
+		return cmdCheck(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -137,6 +139,9 @@ Usage:
 
   blackbox ingest [-home dir] < event.json
         Append one externally recorded tool call (used by editor plugins).
+
+  blackbox check [-home dir] < check.json
+        Evaluate the policy for a built-in tool call (exit 0 allow, 1 deny).
 
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.
@@ -420,10 +425,10 @@ func cmdDecisions(args []string) int {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tACTION\tAPPROVED\tTOOL\tREASON")
+	fmt.Fprintln(w, "TIME\tACTION\tMODE\tAPPROVED\tTOOL\tREASON")
 	for _, d := range recs {
-		fmt.Fprintf(w, "%s\t%s\t%v\t%s\t%s\n",
-			d.At.Local().Format("15:04:05"), d.Action, d.Approved, dash(d.Tool), truncate(d.Reason, 48))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\t%s\n",
+			d.At.Local().Format("15:04:05"), d.Action, d.Mode, d.Approved, dash(d.Tool), truncate(d.Reason, 44))
 	}
 	return flush(w)
 }

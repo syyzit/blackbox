@@ -57,6 +57,33 @@ func TestArgsRegex(t *testing.T) {
 	}
 }
 
+func TestShadowModeParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"mode":"shadow","rules":[{"tool":"shell","action":"deny"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != ModeShadow {
+		t.Fatalf("mode = %q", p.Mode)
+	}
+	if got := p.Decide(Request{Tool: "shell"}); got.Action != Deny {
+		t.Fatalf("decision = %s", got.Action)
+	}
+}
+
+func TestRejectsUnknownMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(path, []byte(`{"mode":"maybe"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected an error for an unknown mode")
+	}
+}
+
 func TestMissingFileIsPermissive(t *testing.T) {
 	p, err := Load(filepath.Join(t.TempDir(), "nope.json"))
 	if err != nil {

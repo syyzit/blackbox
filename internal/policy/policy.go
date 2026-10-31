@@ -19,6 +19,16 @@ const (
 	RequireApproval Action = "require_approval"
 )
 
+// Mode controls whether decisions are enforced or only recorded.
+type Mode string
+
+const (
+	// ModeEnforce blocks calls the policy denies.
+	ModeEnforce Mode = "enforce"
+	// ModeShadow records what would have happened and lets the call through.
+	ModeShadow Mode = "shadow"
+)
+
 // Rule matches tool calls and returns an action. Empty fields match anything.
 type Rule struct {
 	Server string `json:"server,omitempty"` // wildcard over the server command
@@ -33,13 +43,14 @@ type Rule struct {
 // Policy is the on-disk policy file.
 type Policy struct {
 	Default      Action `json:"default"`
+	Mode         Mode   `json:"mode"`
 	RugPullBlock bool   `json:"rugPullBlock"`
 	Rules        []Rule `json:"rules"`
 }
 
 // Default returns a permissive policy that still blocks changed tool definitions.
 func Default() *Policy {
-	return &Policy{Default: Allow, RugPullBlock: true}
+	return &Policy{Default: Allow, Mode: ModeEnforce, RugPullBlock: true}
 }
 
 // Load reads a policy file. A missing path yields the default policy.
@@ -61,6 +72,9 @@ func Load(path string) (*Policy, error) {
 	if p.Default == "" {
 		p.Default = Allow
 	}
+	if p.Mode == "" {
+		p.Mode = ModeEnforce
+	}
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
@@ -68,6 +82,14 @@ func Load(path string) (*Policy, error) {
 }
 
 func (p *Policy) validate() error {
+	if p.Mode == "" {
+		p.Mode = ModeEnforce
+	}
+	switch p.Mode {
+	case ModeEnforce, ModeShadow:
+	default:
+		return fmt.Errorf("policy: unknown mode %q (use enforce or shadow)", p.Mode)
+	}
 	switch p.Default {
 	case Allow, Deny, RequireApproval:
 	default:
@@ -101,6 +123,7 @@ type Request struct {
 // Decision is the outcome of evaluating a request.
 type Decision struct {
 	Action Action
+	Mode   Mode
 	Rule   int
 	Reason string
 }
@@ -108,7 +131,7 @@ type Decision struct {
 // Decide returns the first matching rule, or the default action.
 func (p *Policy) Decide(r Request) Decision {
 	if p == nil {
-		return Decision{Action: Allow, Rule: -1, Reason: "no policy"}
+		return Decision{Action: Allow, Mode: ModeEnforce, Rule: -1, Reason: "no policy"}
 	}
 	for i := range p.Rules {
 		rule := &p.Rules[i]
@@ -122,9 +145,9 @@ func (p *Policy) Decide(r Request) Decision {
 		if reason == "" {
 			reason = fmt.Sprintf("rule %d: %s", i, rule.Action)
 		}
-		return Decision{Action: rule.Action, Rule: i, Reason: reason}
+		return Decision{Action: rule.Action, Mode: p.Mode, Rule: i, Reason: reason}
 	}
-	return Decision{Action: p.Default, Rule: -1, Reason: "default policy"}
+	return Decision{Action: p.Default, Mode: p.Mode, Rule: -1, Reason: "default policy"}
 }
 
 // DecisionRecord is one audit entry.
@@ -135,6 +158,7 @@ type DecisionRecord struct {
 	Tool      string    `json:"tool"`
 	Args      string    `json:"args"`
 	Action    Action    `json:"action"`
+	Mode      Mode      `json:"mode"`
 	Approved  bool      `json:"approved"`
 	Reason    string    `json:"reason"`
 }

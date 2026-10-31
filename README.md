@@ -157,6 +157,7 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 ```json
 {
   "default": "allow",
+  "mode": "shadow",
   "rugPullBlock": true,
   "rules": [
     {"server": "*filesystem*", "tool": "write_*", "action": "require_approval"},
@@ -166,6 +167,8 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 }
 ```
 
+- `mode: "shadow"` records what would have happened and lets everything through.
+  Switch to `"enforce"` when the rules look right in `blackbox decisions` and `report`.
 - `allow` forwards the call.
 - `deny` blocks it with a JSON-RPC error and records the decision.
 - `require_approval` asks on the controlling terminal; a timeout
@@ -173,7 +176,11 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 - When `rugPullBlock` is on, a tool whose definition hash changed since the previous run
   is denied until you intentionally re-approve it.
 
-Every decision is written to the audit log and surfaced in the UI.
+Every decision is written to the audit log with its mode and surfaced in the UI.
+
+The bundled OpenCode plugin calls `blackbox check` before every built-in tool, so the same
+rules apply to `write`, `edit`, and `shell` without routing them through MCP. In shadow
+mode they still run; the decision is logged as `require_approval · shadow`.
 
 ## Ask questions across sessions
 
@@ -194,10 +201,13 @@ blackbox report --since 0 --by server
 ```
 
 ```
-DAY         CALLS  ERRORS  BLOCKED  AVG    P95    MAX    BYTES  COST
-2026-10-31  412    7       3        210ms  840ms  1.2s   12.4MB $0.310
-TOTAL       412    7       3                             12.4MB $0.310
+DAY         CALLS  ERRORS  BLOCKED  WOULD  AVG    P95    MAX    BYTES  COST
+2026-10-31  412    7       3        11     210ms  840ms  1.2s   12.4MB $0.310
+TOTAL       412    7       3        11                           12.4MB $0.310
 ```
+
+`BLOCKED` counts enforced denials; `WOULD` counts shadow-mode calls that a rule would have
+stopped or escalated.
 
 Test a policy before you ship it:
 
@@ -319,6 +329,9 @@ CI runs `go vet` and `go test -race` on every push.
   recorded shell call is what caused one, and it only covers the connection's lifetime.
 - `blackbox ingest` trusts the local caller. Anyone who can run it can add events, so it
   is an integration hook, not an authenticated API.
+- For built-in tools, `require_approval` currently fails the call with "approval required"
+  instead of showing a prompt. MCP approvals use the terminal; wiring built-ins to
+  OpenCode's permission UI is the next step.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.

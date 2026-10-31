@@ -138,6 +138,12 @@ func TestReportAggregates(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := sess.Record(policy.DecisionRecord{
+		Server: "srv", Tool: "echo", Action: policy.RequireApproval, Mode: policy.ModeShadow,
+		Reason: "would prompt", At: day1,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := sess.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +159,7 @@ func TestReportAggregates(t *testing.T) {
 		t.Fatalf("day ordering/count wrong: %+v", byDay)
 	}
 	d1 := byDay[1]
-	if d1.Key != "2026-01-01" || d1.Calls != 3 || d1.Errors != 1 || d1.Blocked != 1 {
+	if d1.Key != "2026-01-01" || d1.Calls != 3 || d1.Errors != 1 || d1.Blocked != 1 || d1.Would != 1 {
 		t.Fatalf("day 1 aggregate wrong: %+v", d1)
 	}
 	if d1.AvgMS != 20 || d1.MaxMS != 30 || d1.P95MS != 30 {

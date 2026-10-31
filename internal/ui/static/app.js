@@ -214,11 +214,13 @@ function renderStats() {
     return;
   }
   const errClass = s.errors ? "bad" : "";
-  const blocked = state.decisions.filter((d) => d.action === "deny").length;
+  const blocked = state.decisions.filter((d) => d.action === "deny" && d.mode !== "shadow").length;
+  const would = state.decisions.filter((d) => d.mode === "shadow" && d.action !== "allow").length;
   $("stats").innerHTML = `
     <div class="stat"><div class="v ${errClass}">${s.calls}</div><div class="k">calls</div></div>
     <div class="stat"><div class="v ${errClass}">${s.errors}</div><div class="k">errors</div></div>
     ${blocked ? `<div class="stat"><div class="v bad">${blocked}</div><div class="k">blocked</div></div>` : ""}
+    ${would ? `<div class="stat"><div class="v warn">${would}</div><div class="k">would block</div></div>` : ""}
     <div class="stat"><div class="v">${Math.round(s.avgMs)}ms</div><div class="k">avg</div></div>
     <div class="stat"><div class="v">${Math.round(s.maxMs)}ms</div><div class="k">max</div></div>
     <div class="stat"><div class="v">${(s.bytes / 1024).toFixed(1)}k</div><div class="k">bytes</div></div>
@@ -310,7 +312,12 @@ function fields(e) {
     out.push([
       "policy",
       state.decisions
-        .map((d) => `${String(d.action).toUpperCase().padEnd(16)} ${d.tool || "-"}  ${d.reason || ""}`)
+        .map(
+          (d) =>
+            `${String(d.action).toUpperCase().padEnd(16)} ${String(d.mode || "enforce").padEnd(7)} ${
+              d.tool || "-"
+            }  ${d.reason || ""}`
+        )
         .join("\n"),
     ]);
   }
