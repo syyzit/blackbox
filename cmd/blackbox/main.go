@@ -59,6 +59,12 @@ func run(args []string) int {
 		return cmdPrune(args[1:])
 	case "dev":
 		return cmdDev(args[1:])
+	case "search":
+		return cmdSearch(args[1:])
+	case "report":
+		return cmdReport(args[1:])
+	case "policy":
+		return cmdPolicy(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -111,6 +117,15 @@ Usage:
 
   blackbox dev [-addr 127.0.0.1:8787] -- <server command>
         Record a server and serve the UI for it in one command.
+
+  blackbox search <query> [-since 7d] [-tool name] [-status s]
+        Full-text search across every recorded frame.
+
+  blackbox report [-since 7d] [-by day|tool|server]
+        Aggregate calls, errors, latency, bytes, cost and blocks.
+
+  blackbox policy test [-policy file] <session-id>
+        Ask what a candidate policy would have done to a recorded session.
 
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.

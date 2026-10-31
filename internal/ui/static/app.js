@@ -10,6 +10,7 @@ const state = {
   selected: -1,
   compare: null,
   decisions: [],
+  search: "",
   filter: "",
   tab: "raw",
 };
@@ -64,6 +65,7 @@ async function loadSessions() {
 }
 
 function renderSessions() {
+  if (state.search.trim().length >= 2) return;
   const list = $("sessionList");
   $("sessionCount").textContent = state.sessions.length ? `(${state.sessions.length})` : "";
   if (!state.sessions.length) {
@@ -104,7 +106,7 @@ function renderSessions() {
   }
 }
 
-async function openSession(id) {
+async function openSession(id, seq) {
   try {
     const data = await api("/api/sessions/" + encodeURIComponent(id));
     state.meta = data.meta;
@@ -112,6 +114,10 @@ async function openSession(id) {
     state.stats = data.stats;
     state.decisions = data.decisions || [];
     state.selected = state.events.length ? 0 : -1;
+    if (seq != null) {
+      const idx = state.events.findIndex((e) => e.seq === seq);
+      if (idx >= 0) state.selected = idx;
+    }
     state.tab = "raw";
     lastSignature = signature(data);
     history.replaceState(null, "", "?session=" + encodeURIComponent(data.meta.id));
@@ -325,6 +331,34 @@ function updateDiffButton() {
   btn.textContent = ok ? `Diff with ${state.compare.slice(-6)}` : "Diff with B";
 }
 
+async function renderSearch(query) {
+  const list = $("sessionList");
+  list.innerHTML = '<div class="empty">searching…</div>';
+  try {
+    const data = await api("/api/search?q=" + encodeURIComponent(query) + "&limit=40");
+    if (state.search.trim() !== query) return;
+    const hits = data.hits || [];
+    $("sessionCount").textContent = hits.length ? `(${hits.length})` : "";
+    if (!hits.length) {
+      list.innerHTML = '<div class="empty">no matches</div>';
+      return;
+    }
+    list.innerHTML = "";
+    for (const h of hits) {
+      const el = document.createElement("div");
+      el.className = "hit";
+      el.innerHTML = `
+        <div class="top"><span class="sid">${esc(h.sessionId)}</span><span class="seq">#${h.seq}</span></div>
+        <div class="snip">${esc(h.tool || h.method || "")} · ${esc(h.snippet || "")}</div>`;
+      el.addEventListener("click", () => openSession(h.sessionId, h.seq));
+      list.appendChild(el);
+    }
+  } catch (err) {
+    console.error(err);
+    list.innerHTML = '<div class="empty">search failed</div>';
+  }
+}
+
 async function showDiff() {
   if (!state.meta || !state.compare) return;
   try {
@@ -357,6 +391,18 @@ function bind() {
     state.filter = e.target.value;
     renderTimeline();
   });
+  let searchTimer;
+  $("search").addEventListener("input", (e) => {
+    state.search = e.target.value;
+    clearTimeout(searchTimer);
+    const query = state.search.trim();
+    if (query.length < 2) {
+      renderSessions();
+      return;
+    }
+    searchTimer = setTimeout(() => renderSearch(query), 250);
+  });
+
   $("diffBtn").addEventListener("click", showDiff);
   $("exportBtn").addEventListener("click", () => {
     if (!state.meta) return;

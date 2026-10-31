@@ -131,6 +131,55 @@ func TestExportAPI(t *testing.T) {
 	}
 }
 
+func TestSearchAPI(t *testing.T) {
+	home := t.TempDir()
+	sess, err := store.Open(home, []string{"srv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Emit(event.Event{
+		Direction: event.ClientToServer, Method: "tools/call", Tool: "echo", ID: "1",
+		Status: event.StatusPending, Args: `{"text":"findme"}`, Raw: `{"jsonrpc":"2.0"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(home).Handler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/search?q=findme", nil))
+	if rec.Code != 200 {
+		t.Fatalf("search status %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Hits []struct {
+			SessionID string `json:"sessionId"`
+			Seq       int64  `json:"seq"`
+			Tool      string `json:"tool"`
+			Snippet   string `json:"snippet"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Hits) != 1 || out.Hits[0].SessionID != id || out.Hits[0].Tool != "echo" {
+		t.Fatalf("bad hits: %+v", out.Hits)
+	}
+	if !strings.Contains(out.Hits[0].Snippet, "findme") {
+		t.Fatalf("snippet = %q", out.Hits[0].Snippet)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/search?q=", nil))
+	if rec.Code != 200 {
+		t.Fatalf("empty query status %d", rec.Code)
+	}
+}
+
 func TestServesIndex(t *testing.T) {
 	home, _ := seed(t)
 	h := New(home).Handler()

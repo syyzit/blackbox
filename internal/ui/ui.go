@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSession)
 	mux.HandleFunc("/api/diff", s.handleDiff)
+	mux.HandleFunc("/api/search", s.handleSearch)
 
 	sub, err := fs.Sub(embedded, "static")
 	if err != nil {
@@ -99,6 +101,81 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		"events":    events,
 		"decisions": decisions,
 	})
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	query := r.URL.Query().Get("q")
+	if strings.TrimSpace(query) == "" {
+		writeJSON(w, map[string]any{"hits": []any{}})
+		return
+	}
+	limit := 50
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 && v <= 500 {
+		limit = v
+	}
+
+	hits, err := store.Search(s.Home, store.SearchOptions{
+		Query:  query,
+		Since:  parseSince(r.URL.Query().Get("since")),
+		Tool:   r.URL.Query().Get("tool"),
+		Status: r.URL.Query().Get("status"),
+		Limit:  limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	type hit struct {
+		SessionID string    `json:"sessionId"`
+		StartedAt time.Time `json:"startedAt"`
+		Argv      []string  `json:"argv"`
+		Seq       int64     `json:"seq"`
+		At        time.Time `json:"at"`
+		Status    string    `json:"status"`
+		Method    string    `json:"method"`
+		Tool      string    `json:"tool"`
+		Snippet   string    `json:"snippet"`
+	}
+	out := make([]hit, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, hit{
+			SessionID: h.Session.ID,
+			StartedAt: h.Session.StartedAt,
+			Argv:      h.Session.Argv,
+			Seq:       h.Event.Seq,
+			At:        h.Event.At,
+			Status:    h.Event.Status,
+			Method:    h.Event.Method,
+			Tool:      h.Event.Tool,
+			Snippet:   store.SearchSnippet(h.Event, query),
+		})
+	}
+	writeJSON(w, map[string]any{"hits": out})
+}
+
+func parseSince(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	if strings.HasSuffix(s, "d") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil {
+			return time.Duration(n) * 24 * time.Hour
+		}
+	}
+	if strings.HasSuffix(s, "w") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(s, "w")); err == nil {
+			return time.Duration(n) * 7 * 24 * time.Hour
+		}
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+	return 0
 }
 
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {

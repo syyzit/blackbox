@@ -521,6 +521,13 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_decisions_session ON policy_decisions(session_id);
 
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+  method, tool, args, result, error,
+  content='events', content_rowid='id', tokenize='unicode61'
+);
+
+
+
 CREATE TABLE IF NOT EXISTS tool_defs (
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   name        TEXT NOT NULL,
@@ -531,6 +538,11 @@ CREATE TABLE IF NOT EXISTS tool_defs (
 `
 
 func migrate(db *sql.DB) error {
+	var hadFTS int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'events_fts'`).Scan(&hadFTS); err != nil {
+		return err
+	}
+
 	for _, stmt := range strings.Split(schema, ";") {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
@@ -540,6 +552,27 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
+	// Trigger bodies contain semicolons, so they cannot be split like the DDL above.
+	for _, stmt := range eventTriggers {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("store: migrate trigger: %w", err)
+		}
+	}
+
+	// Index rows that predate the search table. COUNT(*) on an external-content FTS
+	// table reads the content table, so presence of the table is the reliable signal.
+	if hadFTS == 0 {
+		var events int64
+		if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&events); err != nil {
+			return err
+		}
+		if events > 0 {
+			if _, err := db.Exec(`INSERT INTO events_fts(events_fts) VALUES('rebuild')`); err != nil {
+				return fmt.Errorf("store: rebuild search index: %w", err)
+			}
+		}
+	}
+
 	// Additive migrations for databases created by an older build.
 	for _, add := range []struct {
 		table, column, ddl string
@@ -562,6 +595,23 @@ func migrate(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+var eventTriggers = []string{
+	`CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
+	   INSERT INTO events_fts (rowid, method, tool, args, result, error)
+	   VALUES (new.id, new.method, new.tool, new.args, new.result, new.error);
+	 END`,
+	`CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
+	   INSERT INTO events_fts (events_fts, rowid, method, tool, args, result, error)
+	   VALUES ('delete', old.id, old.method, old.tool, old.args, old.result, old.error);
+	 END`,
+	`CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
+	   INSERT INTO events_fts (events_fts, rowid, method, tool, args, result, error)
+	   VALUES ('delete', old.id, old.method, old.tool, old.args, old.result, old.error);
+	   INSERT INTO events_fts (rowid, method, tool, args, result, error)
+	   VALUES (new.id, new.method, new.tool, new.args, new.result, new.error);
+	 END`,
 }
 
 func hasColumn(db *sql.DB, table, column string) (bool, error) {

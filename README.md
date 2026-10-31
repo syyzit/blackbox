@@ -38,6 +38,9 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
   routes selected servers through Black Box, with a backup.
 - **One-command dev loop**: `dev` records a server, serves the UI, and follows the run.
 - **Retention**: `prune` deletes old sessions or keeps the store under a size budget.
+- **Forensics**: full-text `search` across every frame, a `report` that aggregates by
+  day, tool, or server, and `policy test` to see what a candidate rule would have done
+  to a recorded session.
 
 ## Install
 
@@ -166,6 +169,46 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 
 Every decision is written to the audit log and surfaced in the UI.
 
+## Ask questions across sessions
+
+```sh
+blackbox search "ETIMEDOUT" --since 7d
+blackbox search write_file --status tool_error
+blackbox search needle --tool echo --limit 20
+```
+
+Search runs on SQLite FTS5 over method, tool, args, result, and error, so a tool name, a
+path, an error string, or a JSON value all work. The same search box is in the UI sidebar;
+clicking a hit opens that session at that frame.
+
+```sh
+blackbox report --since 7d
+blackbox report --since 30d --by tool
+blackbox report --since 0 --by server
+```
+
+```
+DAY         CALLS  ERRORS  BLOCKED  AVG    P95    MAX    BYTES  COST
+2026-10-31  412    7       3        210ms  840ms  1.2s   12.4MB $0.310
+TOTAL       412    7       3                             12.4MB $0.310
+```
+
+Test a policy before you ship it:
+
+```sh
+blackbox policy test 20261031-154220 --policy candidate.json
+```
+
+```
+calls    2
+result   allow 1 · deny 1 · require approval 0
+
+DECISION  TOOL  RECORDED    ARGS
+deny      fail  tool_error  {"name":"fail","arguments":{}}
+```
+
+Add `--fail-on-deny` to make it a CI gate.
+
 ## Retention
 
 ```sh
@@ -230,6 +273,8 @@ CI runs `go vet` and `go test -race` on every push.
 - Replay matches calls by method, tool, and arguments, and groups MRTR rounds by the
   recorded `requestState`. A nondeterministic server that returns different payloads for
   identical calls will show up as `result_changed`.
+- Search indexes method, tool, args, result, and error. It does not index the raw frame
+  separately, since that duplicates the fields above.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.
