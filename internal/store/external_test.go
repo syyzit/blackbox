@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -107,5 +108,32 @@ func TestEventsBetweenSeesOtherSessions(t *testing.T) {
 	rep := coverage.Classify("/repo", []coverage.Change{{Path: "a.go", Kind: coverage.Modified}}, got)
 	if rep.Unrecorded != 0 || rep.Covered != 1 {
 		t.Fatalf("external write did not cover the change: %+v", rep)
+	}
+}
+
+func TestResolveDecision(t *testing.T) {
+	home := t.TempDir()
+	err := RecordExternalDecision(home, "ses_approve", policy.DecisionRecord{
+		Server: "opencode", Tool: "shell", CallID: "call-9",
+		Action: policy.RequireApproval, Mode: policy.ModeEnforce,
+		Reason: "built-in shell", At: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ResolveDecision(home, "ses_approve", "call-9", true, " (approved by user)"); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := Decisions(home, "ses_approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || !recs[0].Approved || !strings.Contains(recs[0].Reason, "approved by user") {
+		t.Fatalf("decision was not resolved: %+v", recs)
+	}
+
+	if err := ResolveDecision(home, "ses_approve", "missing", true, ""); err == nil {
+		t.Fatal("expected an error for an unknown call id")
 	}
 }

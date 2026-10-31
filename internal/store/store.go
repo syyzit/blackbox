@@ -171,9 +171,9 @@ func insertDecision(db execer, sessionID string, d policy.DecisionRecord) error 
 		at = time.Now().UTC()
 	}
 	_, err := db.Exec(
-		`INSERT INTO policy_decisions (session_id, at, server, tool, args, action, mode, approved, reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, at.UnixMilli(), d.Server, d.Tool, d.Args, string(d.Action), string(d.Mode), boolInt(d.Approved), d.Reason,
+		`INSERT INTO policy_decisions (session_id, at, server, tool, args, call_id, action, mode, approved, reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, at.UnixMilli(), d.Server, d.Tool, d.Args, d.CallID, string(d.Action), string(d.Mode), boolInt(d.Approved), d.Reason,
 	)
 	return err
 }
@@ -191,7 +191,7 @@ func Decisions(home, prefix string) ([]policy.DecisionRecord, error) {
 		return nil, err
 	}
 	rows, err := db.Query(
-		`SELECT at, server, tool, args, action, mode, approved, reason
+		`SELECT at, server, tool, args, call_id, action, mode, approved, reason
 		   FROM policy_decisions WHERE session_id = ? ORDER BY id`, id)
 	if err != nil {
 		return nil, err
@@ -207,7 +207,7 @@ func Decisions(home, prefix string) ([]policy.DecisionRecord, error) {
 			mode     string
 			approved int
 		)
-		if err := rows.Scan(&at, &d.Server, &d.Tool, &d.Args, &action, &mode, &approved, &d.Reason); err != nil {
+		if err := rows.Scan(&at, &d.Server, &d.Tool, &d.Args, &d.CallID, &action, &mode, &approved, &d.Reason); err != nil {
 			return nil, err
 		}
 		d.SessionID = id
@@ -544,6 +544,7 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
   server      TEXT NOT NULL DEFAULT '',
   tool        TEXT NOT NULL DEFAULT '',
   args        TEXT NOT NULL DEFAULT '',
+  call_id     TEXT NOT NULL DEFAULT '',
   action      TEXT NOT NULL DEFAULT '',
   mode        TEXT NOT NULL DEFAULT 'enforce',
   approved    INTEGER NOT NULL DEFAULT 0,
@@ -615,6 +616,7 @@ func migrate(db *sql.DB) error {
 		{"events", "call_id", `ALTER TABLE events ADD COLUMN call_id TEXT NOT NULL DEFAULT ''`},
 		{"events", "subscription_id", `ALTER TABLE events ADD COLUMN subscription_id TEXT NOT NULL DEFAULT ''`},
 		{"policy_decisions", "mode", `ALTER TABLE policy_decisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'enforce'`},
+		{"policy_decisions", "call_id", `ALTER TABLE policy_decisions ADD COLUMN call_id TEXT NOT NULL DEFAULT ''`},
 		{"events", "external_id", `ALTER TABLE events ADD COLUMN external_id TEXT NOT NULL DEFAULT ''`},
 	} {
 		ok, err := hasColumn(db, add.table, add.column)

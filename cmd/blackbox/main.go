@@ -75,6 +75,8 @@ func run(args []string) int {
 		return cmdCheck(args[1:])
 	case "trace":
 		return cmdTrace(args[1:])
+	case "resolve":
+		return cmdResolve(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -148,6 +150,9 @@ Usage:
 
   blackbox trace [agent-session-id]
         Merge MCP and built-in frames into one timeline per agent session.
+
+  blackbox resolve -session <id> -call <id> -decision allow|deny
+        Record the answer to a built-in approval request.
 
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.

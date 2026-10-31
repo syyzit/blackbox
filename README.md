@@ -217,7 +217,8 @@ rules apply to `write`, `edit`, and `shell` without routing them through MCP. In
 mode they still run; the decision is logged as `require_approval · shadow`.
 
 In enforce mode, a built-in `require_approval` opens OpenCode's normal permission prompt
-and continues if you allow it. OpenCode's default policy allows everything, so add an
+and continues if you allow it. The plugin calls `blackbox resolve` with your answer, so the
+audit row ends up `approved=true` (or a rejection note) instead of staying pending. OpenCode's default policy allows everything, so add an
 `ask` rule for the plugin's action or the prompt is skipped:
 
 ```jsonc

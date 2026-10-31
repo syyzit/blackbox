@@ -157,6 +157,7 @@ type DecisionRecord struct {
 	Server    string    `json:"server"`
 	Tool      string    `json:"tool"`
 	Args      string    `json:"args"`
+	CallID    string    `json:"callId,omitempty"`
 	Action    Action    `json:"action"`
 	Mode      Mode      `json:"mode"`
 	Approved  bool      `json:"approved"`

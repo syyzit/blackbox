@@ -15,6 +15,7 @@ import (
 
 type checkPayload struct {
 	SessionID string          `json:"sessionId"`
+	CallID    string          `json:"callId"`
 	Tool      string          `json:"tool"`
 	Agent     string          `json:"agent"`
 	Input     json.RawMessage `json:"input"`
@@ -60,7 +61,7 @@ func cmdCheck(args []string) int {
 		auditText = auditText[:4096] + "…"
 	}
 	if err := store.RecordExternalDecision(*home, p.SessionID, policy.DecisionRecord{
-		Server: "opencode", Tool: p.Tool, Args: auditText,
+		Server: "opencode", Tool: p.Tool, Args: auditText, CallID: p.CallID,
 		Action: dec.Action, Mode: dec.Mode, Reason: dec.Reason,
 		At: time.Now().UTC(),
 	}); err != nil {

@@ -91,6 +91,7 @@ export default {
         JSON.stringify({
           v: 1,
           sessionId: event.sessionID,
+          callId: event.id,
           tool: event.tool,
           agent: event.agent,
           input: event.input ?? {},
@@ -103,6 +104,13 @@ export default {
       if (check.code === 2) {
         // A require_approval rule in enforce mode: use OpenCode's own permission UI so
         // the prompt looks and behaves like every other approval.
+        const resolve = (decision: string, note: string) =>
+          run(
+            bin,
+            ["resolve", "--session", event.sessionID, "--call", event.id, "--decision", decision, "--note", note],
+            "",
+          )
+
         try {
           await ctx.permission.assert({
             sessionID: event.sessionID,
@@ -114,8 +122,10 @@ export default {
             metadata: { reason: check.message },
           })
         } catch (err: any) {
+          await resolve("deny", " (rejected by user)")
           throw new Error(String(err?.message ?? `approval rejected for ${event.tool}`))
         }
+        await resolve("allow", " (approved by user)")
       }
     })
 
