@@ -76,7 +76,7 @@ func Report(home string, opts ReportOptions) ([]ReportRow, error) {
 	rows, err := db.Query(
 		`SELECT e.at, e.tool, e.status, e.duration_ms, e.size, e.cost_usd, s.argv
 		   FROM events e JOIN sessions s ON s.id = e.session_id
-		  WHERE e.direction = 's2c'
+		  WHERE e.direction = 's2c' AND e.method = 'tools/call'
 		    AND e.status IN ('ok','tool_error','error','input_required')
 		    AND (? = 0 OR e.at >= ?)`, cutoff, cutoff)
 	if err != nil {

@@ -11,8 +11,14 @@ declares a server named `repo`; when it is present, its tools appear as `repo_*`
 - If the `repo` server is unavailable or a tool errors, fall back to the built-in tools
   and say that you did.
 - Never use the `repo_*` tools on paths outside this repository.
-- Shell commands, builds, and tests still go through the normal shell; they are not
-  recorded by this setup.
+- Prefer `shell_run_command` for builds, tests, and read-only git inspection. It runs a
+  program directly, with no shell: pass arguments in `args`, and do not expect pipes,
+  redirection, or `&&` to work.
+- `shell_run_command` allows `go`, `git`, `make`, and a few read-only utilities. Git is
+  restricted to read-only subcommands; commits and pushes still need the normal shell
+  and are not recorded.
+- Both servers are proxy-wrapped, so file and command work appear in `blackbox sessions`.
+  Each MCP connection is its own session, so the two servers produce separate sessions.
 
 After a task, inspect what happened:
 

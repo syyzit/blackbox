@@ -7,6 +7,7 @@ build:
 	go build -o $(BIN)/blackbox ./cmd/blackbox
 	go build -o $(BIN)/fakeserver ./cmd/fakeserver
 	go build -o $(BIN)/demoagent ./cmd/demoagent
+	go build -o $(BIN)/mcpshell ./cmd/mcpshell
 
 test:
 	go test ./...

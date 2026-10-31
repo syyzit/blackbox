@@ -259,6 +259,7 @@ make build   # bin/blackbox, bin/fakeserver, bin/demoagent
 make test    # go test ./...
 make vet     # go vet ./...
 make demo    # the full tour against the bundled server
+# dogfooding the recorder on its own development: docs/dogfood.md
 ./scripts/demo-real.sh   # the same tour through the real filesystem MCP server
 ```
 

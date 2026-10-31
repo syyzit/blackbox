@@ -31,6 +31,34 @@ Use the absolute path to the binary if the agent's process does not inherit your
 the server is unavailable. The config file is gitignored because it contains a local path;
 `AGENTS.md` is committed because the guidance is portable.
 
+## The shell server
+
+`cmd/mcpshell` is a small MCP server with one tool, `run_command`, so builds, tests, and
+read-only git inspection are recorded too:
+
+```jsonc
+"shell": {
+  "type": "local",
+  "command": [
+    "blackbox", "run", "--",
+    "/absolute/path/to/blackbox/bin/mcpshell",
+    "--root", "/absolute/path/to/blackbox"
+  ],
+  "codemode": false
+}
+```
+
+It is deliberately narrow:
+
+- **No shell.** Programs run via `exec`, so pipes, `&&`, and redirection are not
+  interpreted; arguments are passed literally.
+- **Allowlist.** `go`, `git`, `make`, and a few read-only utilities. Git is limited to
+  read-only subcommands (`status`, `diff`, `log`, `show`, ...).
+- **Rooted.** A `cwd` must resolve inside `--root`.
+- **Bounded.** Default 30s timeout and a 64KB output cap.
+
+Build it with `make build`; `install.sh` installs only the main binary.
+
 ## What the first real runs showed
 
 Two OpenCode turns were run against this setup (`list_directory`, then
@@ -53,9 +81,18 @@ Four findings that only a real agent could surface:
 3. **`stats` counted those server requests as calls.** A pending `roots/list` inflated the
    call count. Stats now counts only completed responses.
 
-4. **Only MCP traffic is visible.** Built-in file and shell tools bypass the server
-   entirely, so the recording is as complete as the agent's willingness to use `repo_*`.
-   Shell commands and test runs remain invisible.
+4. **Only MCP traffic is visible.** Built-in file and shell tools bypass the servers
+   entirely, so the recording is as complete as the agent's willingness to use `repo_*`
+   and `shell_run_command`.
+
+5. **The shell server works end to end.** A real OpenCode turn ran
+   `shell_run_command {"command":"go","args":["version"]}`; Black Box recorded the call,
+   its 41ms duration, and the full output. `blackbox policy test` with a candidate rule
+   denying `run_command` reports `deny 1` against that recording.
+
+6. **Handshakes were inflating call counts.** `initialize` and `tools/list` responses were
+   counted as "calls" in `stats` and `report`. Both now count only `tools/call` responses,
+   which is what a person means by a call.
 
 ## The loop
 

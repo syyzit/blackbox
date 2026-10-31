@@ -37,6 +37,11 @@ func TestEventsPersistAndAggregate(t *testing.T) {
 		Direction: event.ServerToClient, Method: "roots/list", ID: "srv-1",
 		Status: event.StatusPending, Size: 10, Raw: `{"id":"srv-1"}`,
 	})
+	// Neither is a protocol handshake.
+	emit(event.Event{
+		Direction: event.ServerToClient, Method: "initialize", ID: "0",
+		Status: event.StatusOK, Size: 20, Raw: `{"id":0,"result":{}}`,
+	})
 	if err := sess.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +53,8 @@ func TestEventsPersistAndAggregate(t *testing.T) {
 	if meta.ID != id {
 		t.Fatalf("resolved wrong session: %s != %s", meta.ID, id)
 	}
-	if len(events) != 4 {
-		t.Fatalf("expected 4 events, got %d", len(events))
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(events))
 	}
 	if events[0].Seq != 1 || events[2].Seq != 3 {
 		t.Fatalf("sequence was not preserved: %+v", events)
@@ -88,7 +93,7 @@ func TestEventsPersistAndAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Events != 4 {
+	if len(list) != 1 || list[0].Events != 5 {
 		t.Fatalf("list did not count events: %+v", list)
 	}
 }
