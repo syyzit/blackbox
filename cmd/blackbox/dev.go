@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/proxy"
 	"github.com/spacecr8ed/blackbox/internal/redact"
 	"github.com/spacecr8ed/blackbox/internal/store"
@@ -33,6 +34,8 @@ func cmdDev(args []string) int {
 	approvalTimeout := fs.Duration("approval-timeout", time.Minute, "how long to wait for an approval before denying")
 	open := fs.Bool("open", true, "open the browser")
 	keepUI := fs.Bool("keep-ui", true, "keep serving the UI after the server exits")
+	watch := fs.String("watch", ".", "directory to check for unrecorded file changes")
+	noWatch := fs.Bool("no-watch", false, "skip the coverage check")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -55,6 +58,11 @@ func cmdDev(args []string) int {
 		return 1
 	}
 	defer sess.Close()
+
+	var before *coverage.Snapshot
+	if !*noWatch {
+		before = snapshotCoverage(*watch)
+	}
 
 	ln, url, err := listenWithFallback(*addr)
 	if err != nil {
@@ -92,6 +100,7 @@ func cmdDev(args []string) int {
 		Approver:        timeoutApprover(*approvalTimeout),
 		Audit:           sess,
 	})
+	finishCoverage(sess, before)
 
 	code := 0
 	if runErr != nil {

@@ -41,6 +41,8 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 - **Forensics**: full-text `search` across every frame, a `report` that aggregates by
   day, tool, or server, and `policy test` to see what a candidate rule would have done
   to a recorded session.
+- **Coverage check**: snapshots the watched tree before and after a session and flags
+  files that changed with no recorded write, so a blind spot is visible instead of silent.
 
 ## Install
 
@@ -114,6 +116,7 @@ blackbox sessions                       # newest first, with frame counts
 blackbox show <id>                      # timeline: direction, status, latency
 blackbox stats <id>                     # calls, errors, latency, bytes, cost
 blackbox decisions <id>                 # policy audit log
+blackbox coverage <id>                  # file changes the recording missed
 blackbox export <id> -out incident.json # redacted incident bundle
 blackbox ui -open                       # the web interface
 blackbox dev -- ./my-server             # record + UI + follow, in one command
@@ -209,6 +212,37 @@ deny      fail  tool_error  {"name":"fail","arguments":{}}
 
 Add `--fail-on-deny` to make it a CI gate.
 
+## Coverage: what the recording might have missed
+
+Black Box only sees MCP traffic. If the agent uses a built-in editor or shell, files
+change with nothing in the log to explain them. `run` and `dev` snapshot the working tree
+before and after the connection and compare:
+
+```sh
+blackbox run -- ./my-server          # watches . by default
+blackbox run -watch src -- ./my-server
+blackbox run -no-watch -- ./my-server
+blackbox coverage <id>
+```
+
+```
+blackbox · coverage: 2 changed, 2 not seen in a recorded write
+  unrecorded a.txt (modified)
+  unrecorded b.txt (created)
+```
+
+Each change is classified:
+
+- **covered** — the path appears in a recorded write-ish call (`write_file`, `edit_file`, ...)
+  or in a recorded shell call's arguments.
+- **unverified** — the session had a recorded shell call, so a command could explain the
+  change even though the path was not named.
+- **unrecorded** — nothing in the recording explains it.
+
+The UI shows a `coverage gap` badge and a coverage tab. The check skips `.git`,
+`node_modules`, `vendor`, build output, and similar directories, caps hashing at 256 MB,
+and marks the result truncated rather than pretending it was complete.
+
 ## Retention
 
 ```sh
@@ -276,6 +310,8 @@ CI runs `go vet` and `go test -race` on every push.
   identical calls will show up as `result_changed`.
 - Search indexes method, tool, args, result, and error. It does not index the raw frame
   separately, since that duplicates the fields above.
+- Coverage is a heuristic. It catches changes it can see on disk; it cannot prove that a
+  recorded shell call is what caused one, and it only covers the connection's lifetime.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.

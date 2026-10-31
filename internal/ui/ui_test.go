@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/store"
 )
@@ -177,6 +178,40 @@ func TestSearchAPI(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/search?q=", nil))
 	if rec.Code != 200 {
 		t.Fatalf("empty query status %d", rec.Code)
+	}
+}
+
+func TestCoverageInSessionAPI(t *testing.T) {
+	home := t.TempDir()
+	sess, err := store.Open(home, []string{"srv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SaveCoverage(coverage.Report{
+		Root: "/repo", Changed: 1, Unrecorded: 1,
+		Files: []coverage.Class{{Path: "a.go", Kind: coverage.Modified, Status: coverage.Unrecorded}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id := sess.Meta.ID
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(home).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/"+id, nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Coverage *coverage.Report `json:"coverage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Coverage == nil || out.Coverage.Unrecorded != 1 || out.Coverage.Files[0].Path != "a.go" {
+		t.Fatalf("coverage missing from the API: %+v", out.Coverage)
 	}
 }
 

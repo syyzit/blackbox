@@ -3,6 +3,7 @@ package store
 import (
 	"time"
 
+	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/event"
 	"github.com/spacecr8ed/blackbox/internal/policy"
 )
@@ -21,6 +22,7 @@ type Bundle struct {
 	Stats      Stats                   `json:"stats"`
 	Events     []event.Event           `json:"events"`
 	Decisions  []policy.DecisionRecord `json:"decisions"`
+	Coverage   *coverage.Report        `json:"coverage,omitempty"`
 }
 
 // Export builds an incident bundle for a session id or unique prefix.
@@ -43,6 +45,10 @@ func Export(home, prefix string) (Bundle, error) {
 	if decisions == nil {
 		decisions = []policy.DecisionRecord{}
 	}
+	cov, err := CoverageFor(home, meta.ID)
+	if err != nil {
+		return Bundle{}, err
+	}
 	return Bundle{
 		Format:     ExportFormat,
 		ExportedAt: time.Now().UTC(),
@@ -50,5 +56,6 @@ func Export(home, prefix string) (Bundle, error) {
 		Stats:      stats,
 		Events:     events,
 		Decisions:  decisions,
+		Coverage:   cov,
 	}, nil
 }

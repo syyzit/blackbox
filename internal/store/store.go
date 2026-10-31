@@ -509,6 +509,12 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_tool ON events(session_id, tool);
 
+CREATE TABLE IF NOT EXISTS coverage (
+  session_id  TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  checked_at  INTEGER NOT NULL,
+  report      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS policy_decisions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

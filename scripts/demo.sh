@@ -47,5 +47,15 @@ printf '%s\n' \
 C="$(newest)"
 ./bin/blackbox decisions "$C"
 
-step "5. inspect in the browser"
-echo "blackbox ui -open    # sessions, scrubber, frame detail, run diff"
+step "5. coverage: catch a change outside the recording"
+COV="$(mktemp -d)"
+echo one >"$COV/a.txt"
+( sleep 1; echo two >"$COV/a.txt"; echo new >"$COV/b.txt" ) &
+{ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'; sleep 3; } \
+  | ./bin/blackbox run -watch "$COV" -- ./bin/fakeserver >/dev/null
+wait
+D="$(newest)"
+./bin/blackbox coverage "$D"
+
+step "6. inspect in the browser"
+echo "blackbox ui -open    # sessions, scrubber, frame detail, run diff, coverage tab"

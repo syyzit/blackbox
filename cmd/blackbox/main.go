@@ -17,6 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/policy"
 	"github.com/spacecr8ed/blackbox/internal/proxy"
 	"github.com/spacecr8ed/blackbox/internal/redact"
@@ -65,6 +66,8 @@ func run(args []string) int {
 		return cmdReport(args[1:])
 	case "policy":
 		return cmdPolicy(args[1:])
+	case "coverage":
+		return cmdCoverage(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -127,6 +130,9 @@ Usage:
   blackbox policy test [-policy file] <session-id>
         Ask what a candidate policy would have done to a recorded session.
 
+  blackbox coverage [-home dir] <session-id|prefix>
+        Show which file changes the recording did not account for.
+
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.
 
@@ -155,6 +161,8 @@ func cmdRun(args []string) int {
 	priceIn := fs.Float64("price-in", 0, "USD per million input tokens, for reported usage")
 	priceOut := fs.Float64("price-out", 0, "USD per million output tokens, for reported usage")
 	approvalTimeout := fs.Duration("approval-timeout", time.Minute, "how long to wait for an approval before denying")
+	watch := fs.String("watch", ".", "directory to check for unrecorded file changes")
+	noWatch := fs.Bool("no-watch", false, "skip the coverage check")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -178,6 +186,11 @@ func cmdRun(args []string) int {
 	}
 	defer sess.Close()
 
+	var before *coverage.Snapshot
+	if !*noWatch {
+		before = snapshotCoverage(*watch)
+	}
+
 	fmt.Fprintf(os.Stderr, "blackbox · session %s\n", sess.Meta.ID)
 	fmt.Fprintf(os.Stderr, "blackbox · recording to %s\n", filepath.Join(sess.Home, "blackbox.db"))
 
@@ -198,6 +211,7 @@ func cmdRun(args []string) int {
 		Approver:        timeoutApprover(*approvalTimeout),
 		Audit:           sess,
 	})
+	finishCoverage(sess, before)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -640,7 +654,27 @@ func cmdShow(args []string) int {
 			}
 		}
 	}
-	return flush(w)
+	if code := flush(w); code != 0 {
+		return code
+	}
+
+	if rep, err := store.CoverageFor(*home, meta.ID); err == nil && rep != nil {
+		fmt.Printf("\ncoverage  %d changed · %d covered · %d unverified · %d unrecorded\n",
+			rep.Changed, rep.Covered, rep.Unverified, rep.Unrecorded)
+		shown := 0
+		for _, f := range rep.Files {
+			if f.Status == coverage.Covered {
+				continue
+			}
+			if shown >= 8 {
+				fmt.Printf("  … %d more\n", len(rep.Files)-shown+rep.More)
+				break
+			}
+			fmt.Printf("  %-10s %s (%s)\n", f.Status, f.Path, f.Kind)
+			shown++
+		}
+	}
+	return 0
 }
 
 func flush(w *tabwriter.Writer) int {

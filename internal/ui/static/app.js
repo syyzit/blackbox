@@ -10,6 +10,7 @@ const state = {
   selected: -1,
   compare: null,
   decisions: [],
+  coverage: null,
   search: "",
   filter: "",
   tab: "raw",
@@ -113,6 +114,7 @@ async function openSession(id, seq) {
     state.events = data.events || [];
     state.stats = data.stats;
     state.decisions = data.decisions || [];
+    state.coverage = data.coverage || null;
     state.selected = state.events.length ? 0 : -1;
     if (seq != null) {
       const idx = state.events.findIndex((e) => e.seq === seq);
@@ -170,9 +172,39 @@ function renderAll() {
     ? `${(meta.argv || []).join(" ")} · ${new Date(meta.startedAt).toLocaleString()}`
     : "";
   renderStats();
+  renderCoverageBadge();
   renderTimeline();
   renderScrubber();
   renderDetail();
+}
+
+function renderCoverageBadge() {
+  const badge = $("coverageBadge");
+  const cov = state.coverage;
+  if (!cov || (!cov.unrecorded && !cov.unverified)) {
+    badge.classList.add("hidden");
+    return;
+  }
+  const parts = [];
+  if (cov.unrecorded) parts.push(`${cov.unrecorded} unrecorded`);
+  if (cov.unverified) parts.push(`${cov.unverified} unverified`);
+  badge.textContent = "coverage gap · " + parts.join(" · ");
+  badge.classList.remove("hidden");
+}
+
+function coverageText(cov) {
+  const lines = [
+    `root       ${cov.root}`,
+    `changed    ${cov.changed} · covered ${cov.covered} · unverified ${cov.unverified} · unrecorded ${cov.unrecorded}`,
+  ];
+  if (cov.truncated) lines.push("note       snapshot was truncated; results are partial");
+  const interesting = (cov.files || []).filter((f) => f.status !== "covered");
+  if (interesting.length) {
+    lines.push("");
+    for (const f of interesting) lines.push(`${f.status.padEnd(10)} ${f.kind.padEnd(9)} ${f.path}`);
+    if (cov.more) lines.push(`… ${cov.more} more`);
+  }
+  return lines.join("\n");
 }
 
 function renderStats() {
@@ -273,6 +305,7 @@ function fields(e) {
   if (e.result) out.push(["result", pretty(e.result)]);
   if (e.error) out.push(["error", e.error]);
   if (e.toolDefs && e.toolDefs.length) out.push(["tools", pretty(JSON.stringify(e.toolDefs, null, 2))]);
+  if (state.coverage) out.push(["coverage", coverageText(state.coverage)]);
   if (state.decisions.length) {
     out.push([
       "policy",

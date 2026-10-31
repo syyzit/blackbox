@@ -94,6 +94,25 @@ Four findings that only a real agent could surface:
    counted as "calls" in `stats` and `report`. Both now count only `tools/call` responses,
    which is what a person means by a call.
 
+## Coverage catches the bypass
+
+The point of the coverage check is to make the cooperative boundary honest. Verified with
+a live recording: a file was modified and another created from outside the MCP servers
+while a session was running.
+
+```
+blackbox · coverage: 2 changed, 2 not seen in a recorded write
+  unrecorded a.txt (modified)
+  unrecorded b.txt (created)
+```
+
+The UI shows the same thing as a `coverage gap` badge and a coverage tab. A change named
+in a recorded write call is `covered`; a change that could plausibly come from a recorded
+shell call is `unverified`; everything else is `unrecorded`.
+
+The window is the MCP connection, not the agent turn, for the same reason sessions are:
+OpenCode keeps the server process alive across prompts.
+
 ## The loop
 
 ```sh

@@ -95,11 +95,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	cov, err := store.CoverageFor(s.Home, meta.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, map[string]any{
 		"meta":      meta,
 		"stats":     stats,
 		"events":    events,
 		"decisions": decisions,
+		"coverage":  cov,
 	})
 }
 
