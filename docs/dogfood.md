@@ -217,11 +217,11 @@ TIME      ACTION            MODE     TOOL   REASON
 The command ran after approval and the decision was updated with the answer:
 
 ```
-19:31:27  require_approval  enforce  true  shell  built-in shell needs a human (approved by user)
+19:31:27  require_approval  enforce  true  shell  built-in shell needs a human (approved via permission flow)
 ```
 
 With `--auto`, OpenCode auto-approves; interactively it shows the usual permission
-dialog. A rejection records `(rejected by user)` and fails the call. The local policy was
+dialog. A rejection records `(rejected via permission flow)` and fails the call. The local policy was
 returned to shadow mode afterward.
 
 ## The loop

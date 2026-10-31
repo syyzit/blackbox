@@ -122,10 +122,10 @@ export default {
             metadata: { reason: check.message },
           })
         } catch (err: any) {
-          await resolve("deny", " (rejected by user)")
+          await resolve("deny", " (rejected via permission flow)")
           throw new Error(String(err?.message ?? `approval rejected for ${event.tool}`))
         }
-        await resolve("allow", " (approved by user)")
+        await resolve("allow", " (approved via permission flow)")
       }
     })
 

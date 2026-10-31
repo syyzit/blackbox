@@ -122,14 +122,14 @@ func TestResolveDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ResolveDecision(home, "ses_approve", "call-9", true, " (approved by user)"); err != nil {
+	if err := ResolveDecision(home, "ses_approve", "call-9", true, " (approved via permission flow)"); err != nil {
 		t.Fatal(err)
 	}
 	recs, err := Decisions(home, "ses_approve")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 1 || !recs[0].Approved || !strings.Contains(recs[0].Reason, "approved by user") {
+	if len(recs) != 1 || !recs[0].Approved || !strings.Contains(recs[0].Reason, "approved via permission flow") {
 		t.Fatalf("decision was not resolved: %+v", recs)
 	}
 

@@ -31,12 +31,12 @@ func cmdResolve(args []string) int {
 	case "allow", "approved", "yes":
 		approved = true
 		if *note == "" {
-			*note = " (approved by user)"
+			*note = " (approved via permission flow)"
 		}
 	case "deny", "rejected", "no":
 		approved = false
 		if *note == "" {
-			*note = " (rejected by user)"
+			*note = " (rejected via permission flow)"
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "blackbox resolve: unknown decision %q\n", *decision)
