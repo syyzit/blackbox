@@ -145,6 +145,66 @@ func ParseUsage(result json.RawMessage) Usage {
 	return Usage{}
 }
 
+// RequestState extracts params.requestState (MRTR retries echo it).
+func (m *Message) RequestState() string {
+	if len(m.Params) == 0 {
+		return ""
+	}
+	var p struct {
+		RequestState string `json:"requestState"`
+	}
+	_ = json.Unmarshal(m.Params, &p)
+	return p.RequestState
+}
+
+// HasInputResponses reports whether the frame carries MRTR inputResponses.
+func (m *Message) HasInputResponses() bool {
+	if len(m.Params) == 0 {
+		return false
+	}
+	var p struct {
+		InputResponses json.RawMessage `json:"inputResponses"`
+	}
+	if err := json.Unmarshal(m.Params, &p); err != nil {
+		return false
+	}
+	return len(p.InputResponses) > 0 && string(p.InputResponses) != "null"
+}
+
+// ResultRequestState reads result.requestState from an input_required result.
+func ResultRequestState(result json.RawMessage) string {
+	if len(result) == 0 {
+		return ""
+	}
+	var r struct {
+		RequestState string `json:"requestState"`
+	}
+	_ = json.Unmarshal(result, &r)
+	return r.RequestState
+}
+
+// SubscriptionID reads params._meta["io.modelcontextprotocol/subscriptionId"].
+func (m *Message) SubscriptionID() string {
+	if len(m.Params) == 0 {
+		return ""
+	}
+	var p struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	if err := json.Unmarshal(m.Params, &p); err != nil || p.Meta == nil {
+		return ""
+	}
+	raw, ok := p.Meta["io.modelcontextprotocol/subscriptionId"]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
+}
+
 // ToolName extracts params.name for tools/call frames.
 func (m *Message) ToolName() string {
 	if m.Method != "tools/call" || len(m.Params) == 0 {

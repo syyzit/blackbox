@@ -29,15 +29,28 @@ func calls(events []event.Event) []call {
 	}
 
 	out := make([]call, 0, len(events))
+	position := map[string]int{}
 	for _, e := range events {
 		if e.Direction != event.ClientToServer || e.Method == "" || e.Status == event.StatusNotify {
 			continue
 		}
-		out = append(out, call{
+		// One logical call can span several MRTR rounds. The last round carries the
+		// final arguments and the response, so it replaces the earlier rounds in place.
+		group := e.CallID
+		if group == "" {
+			group = "rpc-" + e.ID
+		}
+		c := call{
 			ev:     e,
 			key:    e.Method + "\x00" + e.Tool + "\x00" + canonical(e.Args),
 			result: results[e.ID],
-		})
+		}
+		if i, ok := position[group]; ok {
+			out[i] = c
+			continue
+		}
+		position[group] = len(out)
+		out = append(out, c)
 	}
 	return out
 }

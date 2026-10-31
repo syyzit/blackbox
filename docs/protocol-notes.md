@@ -35,8 +35,11 @@ A long-running tool does not hold a session open. The server replies with
 original call with answers attached in `inputResponses`.
 
 Recorder implication: one logical tool call can appear as **several request/response
-frames**. The timeline UI should group by the original call, not by frame, or a single
-`deploy` looks like five unrelated calls.
+frames**, each with a different JSON-RPC id. Black Box assigns every request a `callId`:
+the first round takes `call-<rpc-id>`, and a retry joins the existing group by matching
+the echoed `requestState`, falling back to an open call with the same method and tool.
+The timeline, replay, and diff all work on logical calls, not frames, so a single
+`deploy` that asks for confirmation twice is still one call.
 
 ## Result shape
 
@@ -86,7 +89,8 @@ The failure modes worth detecting are protocol-level, not HTTP-level:
 
 - How do we fingerprint a server when `serverInfo` is self-reported and optional? Plan:
   hash the first observed `server/discover`/`tools/list` payload, not the claimed name.
-- `subscriptions/listen` is a request whose response is an open notification stream. The
-  recorder needs a streaming event kind, not a single result.
+- `subscriptions/listen` is a request whose response is an open notification stream.
+  Notifications are recorded individually (with the subscription id from `_meta`) and
+  replayed after the exchange they followed.
 - OTel `traceparent` in `_meta` gives us free cross-process correlation if the client sets
   it; otherwise we mint our own trace id per proxied run.

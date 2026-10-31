@@ -33,6 +33,14 @@ func TestReplayAgentHelper(t *testing.T) {
 	}
 
 	ask(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`, `"tools"`)
+
+	// The recorded progress notification must arrive right after the response.
+	line, err := br.ReadString('\n')
+	if err != nil || !strings.Contains(line, "progress") {
+		fmt.Fprintf(os.Stderr, "agent expected a progress notification, got %q (%v)\n", line, err)
+		os.Exit(5)
+	}
+
 	ask(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"replayed"}}}`, "replayed")
 	os.Exit(0)
 }
@@ -61,6 +69,10 @@ func TestServeStdioReplaysRecordedSession(t *testing.T) {
 			Raw:    `{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","tools":[]}}`,
 		},
 		{
+			Direction: event.ServerToClient, Method: "notifications/progress", Status: event.StatusNotify,
+			Raw: `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`,
+		},
+		{
 			Direction: event.ClientToServer, Method: "tools/call", Tool: "echo", ID: "2",
 			Status: event.StatusPending, Args: `{"name":"echo","arguments":{"text":"replayed"}}`,
 			Raw: `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"replayed"}}}`,
@@ -87,10 +99,13 @@ func TestServeStdioReplaysRecordedSession(t *testing.T) {
 	if divs := eng.Divergences(); len(divs) != 0 {
 		t.Fatalf("unexpected divergences: %+v", divs)
 	}
-	if len(sink.events) != 4 {
-		t.Fatalf("expected 4 recorded frames, got %d", len(sink.events))
+	if len(sink.events) != 5 {
+		t.Fatalf("expected 5 recorded frames, got %d", len(sink.events))
 	}
-	if sink.events[1].Raw == "" || sink.events[3].Raw == "" {
+	if sink.events[1].Raw == "" || sink.events[4].Raw == "" {
 		t.Fatalf("responses were not recorded: %+v", sink.events)
+	}
+	if sink.events[2].Method != "notifications/progress" {
+		t.Fatalf("replayed notification was not recorded: %+v", sink.events[2])
 	}
 }

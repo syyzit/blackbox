@@ -143,6 +143,13 @@ type call struct {
 	method string
 	tool   string
 	at     time.Time
+	callID string
+	state  string
+}
+
+type openCall struct {
+	callID string
+	state  string
 }
 
 type pipelineConfig struct {
@@ -183,6 +190,10 @@ type pipeline struct {
 
 	mu      sync.Mutex
 	pending map[string]call
+
+	callMu     sync.Mutex
+	openStates map[string]string     // MRTR requestState -> call id
+	openKeys   map[string][]openCall // method\x00tool -> open calls
 }
 
 func newPipeline(c pipelineConfig) *pipeline {
@@ -202,6 +213,8 @@ func newPipeline(c pipelineConfig) *pipeline {
 		rugPulled:  map[string]bool{},
 		toolHashes: map[string]string{},
 		pending:    make(map[string]call),
+		openStates: make(map[string]string),
+		openKeys:   make(map[string][]openCall),
 	}
 }
 
@@ -313,6 +326,64 @@ func auditArgs(red *redact.Redactor, args string) string {
 	return out
 }
 
+// callIDFor groups MRTR retries under the id of the initial request. The retry has a
+// different JSON-RPC id by spec, so the link is the echoed requestState (preferred) or
+// an open call to the same method and tool.
+func (p *pipeline) callIDFor(msg *jsonrpc.Message, method, tool, rpcID string) string {
+	p.callMu.Lock()
+	defer p.callMu.Unlock()
+
+	if state := msg.RequestState(); state != "" {
+		if id, ok := p.openStates[state]; ok {
+			return id
+		}
+	}
+	if msg.HasInputResponses() {
+		key := method + "\x00" + tool
+		if open := p.openKeys[key]; len(open) > 0 {
+			return open[len(open)-1].callID
+		}
+	}
+	return "call-" + rpcID
+}
+
+// trackMRTR keeps the grouping state in sync with the last response of a call.
+func (p *pipeline) trackMRTR(c call, resultType string, result json.RawMessage) {
+	p.callMu.Lock()
+	defer p.callMu.Unlock()
+
+	key := c.method + "\x00" + c.tool
+	if resultType != "input_required" {
+		p.closeCallLocked(c, key)
+		return
+	}
+	state := jsonrpc.ResultRequestState(result)
+	if state != "" {
+		p.openStates[state] = c.callID
+	}
+	p.openKeys[key] = append(p.openKeys[key], openCall{callID: c.callID, state: state})
+}
+
+func (p *pipeline) closeCallLocked(c call, key string) {
+	for state, id := range p.openStates {
+		if id == c.callID {
+			delete(p.openStates, state)
+		}
+	}
+	open := p.openKeys[key]
+	kept := open[:0]
+	for _, oc := range open {
+		if oc.callID != c.callID {
+			kept = append(kept, oc)
+		}
+	}
+	if len(kept) == 0 {
+		delete(p.openKeys, key)
+	} else {
+		p.openKeys[key] = kept
+	}
+}
+
 func (p *pipeline) isRugPulled(tool string) bool {
 	p.rugPulledMu.Lock()
 	defer p.rugPulledMu.Unlock()
@@ -372,13 +443,14 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		p.emit(e) // unparseable frame: preserve the evidence, skip the metadata
 		return
 	}
+	e.SubscriptionID = msg.SubscriptionID()
 
 	method := msg.Method
 	if hint.method != "" {
 		method = hint.method // header routing is authoritative
 	}
 	tool := msg.ToolName()
-	if hint.name != "" {
+	if tool == "" && hint.name != "" {
 		tool = hint.name
 	}
 
@@ -394,12 +466,16 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			e.Status = event.StatusPending
 		}
 		e.Args = p.red.String(compact(msg.Params))
+		e.CallID = p.callIDFor(msg, e.Method, e.Tool, e.ID)
 		if e.Method == "tools/call" && e.Tool != "" {
 			e.ToolHash = p.toolHash(e.Tool)
 		}
 
 		p.mu.Lock()
-		p.pending[e.ID] = call{method: e.Method, tool: e.Tool, at: e.At}
+		p.pending[e.ID] = call{
+			method: e.Method, tool: e.Tool, at: e.At,
+			callID: e.CallID, state: msg.RequestState(),
+		}
 		p.mu.Unlock()
 
 	case isNotification:
@@ -419,6 +495,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		if ok {
 			e.Method = c.method
 			e.Tool = c.tool
+			e.CallID = c.callID
 			e.DurationMS = e.At.Sub(c.at).Milliseconds()
 		}
 
@@ -449,6 +526,10 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			default:
 				e.Status = event.StatusOK
 			}
+		}
+
+		if e.CallID != "" {
+			p.trackMRTR(c, resultType, msg.Result)
 		}
 
 		if e.Method == "tools/list" {

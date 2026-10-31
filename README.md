@@ -20,7 +20,12 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 - **Secret redaction** applied before persistence, audit and rendering, never to the
   live stream.
 - **Tool-definition hashing** that flags a definition changed after approval (rug-pull).
-- **Deterministic replay**: answer a live agent from a recording, offline.
+- **MRTR-aware grouping**: a call that asks for input and retries is one logical call,
+  not several unrelated ones, across the timeline, replay, and diff.
+- **Deterministic replay**: answer a live agent from a recording, offline, including the
+  server notifications it emitted.
+- **SSE as evidence**: streamed frames are recorded as parsed JSON with their
+  subscription id and attributed tool, not as opaque lines.
 - **Run diff**: same task twice, see exactly which calls diverged.
 - **Policy gate**: allow / deny / require-approval per server, tool, and argument regex,
   with an audit log. Approvals happen on `/dev/tty`, never on the MCP stream, so an agent
@@ -174,8 +179,9 @@ CI runs `go vet` and `go test -race` on every push.
   reports it, using `-price-in` / `-price-out` (USD per million tokens). Most servers
   report nothing, so cost stays zero. Latency and bytes are always recorded. The bundled
   fake server reports tokens so the demo can show a non-zero figure.
-- Replay matches calls by method, tool, and arguments. A nondeterministic server that
-  returns different payloads for identical calls will show up as `result_changed`.
+- Replay matches calls by method, tool, and arguments, and groups MRTR rounds by the
+  recorded `requestState`. A nondeterministic server that returns different payloads for
+  identical calls will show up as `result_changed`.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.

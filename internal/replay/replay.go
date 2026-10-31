@@ -36,21 +36,53 @@ type Divergence struct {
 
 // Engine replays recorded exchanges.
 type Engine struct {
-	mu          sync.Mutex
-	exchanges   []Exchange
-	divergences []Divergence
-	last        *Exchange
+	mu            sync.Mutex
+	exchanges     []Exchange
+	divergences   []Divergence
+	last          *Exchange
+	lastNotes     [][]byte
+	groups        map[string][]int
+	groupsByKey   map[string][]string
+	stateToGroup  map[string]string
+	notifications map[int][][]byte
 }
 
-// New pairs requests and responses by JSON-RPC id.
+// New pairs requests and responses by JSON-RPC id, groups MRTR rounds by call id, and
+// buckets server notifications onto the exchange they followed.
 func New(events []event.Event) *Engine {
-	e := &Engine{}
+	e := &Engine{
+		groups:        map[string][]int{},
+		groupsByKey:   map[string][]string{},
+		stateToGroup:  map[string]string{},
+		notifications: map[int][][]byte{},
+	}
+
 	index := map[string]int{}
+	lastIdx := -1
 	for _, ev := range events {
 		switch {
 		case ev.Direction == event.ClientToServer && ev.Method != "" && ev.Status != event.StatusNotify && ev.ID != "":
-			index[ev.ID] = len(e.exchanges)
+			idx := len(e.exchanges)
+			callID := ev.CallID
+			if callID == "" {
+				callID = "call-" + ev.ID
+			}
 			e.exchanges = append(e.exchanges, Exchange{Request: ev})
+			index[ev.ID] = idx
+			e.groups[callID] = append(e.groups[callID], idx)
+			key := ev.Method + "\x00" + ev.Tool
+			e.groupsByKey[key] = append(e.groupsByKey[key], callID)
+			if state := requestStateOf(ev.Args); state != "" {
+				e.stateToGroup[state] = callID
+			}
+			lastIdx = idx
+
+		case ev.Direction == event.ServerToClient && ev.Method != "" && ev.ID == "":
+			// Server notification or stream frame: attach to the call it followed.
+			if lastIdx >= 0 && ev.Raw != "" {
+				e.notifications[lastIdx] = append(e.notifications[lastIdx], []byte(ev.Raw))
+			}
+
 		case ev.Direction == event.ServerToClient && ev.ID != "":
 			if i, ok := index[ev.ID]; ok {
 				e.exchanges[i].Response = ev
@@ -82,11 +114,22 @@ func (e *Engine) LastUsed() *Exchange {
 	return e.last
 }
 
+// TakeNotifications returns the frames that followed the last answered call.
+func (e *Engine) TakeNotifications() [][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := e.lastNotes
+	e.lastNotes = nil
+	return out
+}
+
 // Respond returns the recorded response for a request frame.
 //
-// Matching is by method and tool, preferring an exchange whose arguments match
-// exactly. When nothing matches, a JSON-RPC error is synthesized and the event is
-// recorded as a divergence rather than fabricated.
+// Matching prefers the group of the logical call, so an MRTR retry consumes the next
+// round of the same call instead of looking like a new one. Within a group the earliest
+// unused round wins; otherwise the first unused exchange with the same method and tool
+// is used, preferring an exact argument match. When nothing matches, a JSON-RPC error is
+// synthesized and recorded as a divergence rather than fabricated.
 func (e *Engine) Respond(line []byte) ([]byte, bool) {
 	msg, err := jsonrpc.Decode(line)
 	if err != nil || !msg.IsRequest() {
@@ -97,20 +140,36 @@ func (e *Engine) Respond(line []byte) ([]byte, bool) {
 	defer e.mu.Unlock()
 
 	best := -1
-	for i := range e.exchanges {
-		x := &e.exchanges[i]
-		if x.Used || x.Response.Raw == "" {
-			continue
-		}
-		if x.Request.Method != msg.Method || x.Request.Tool != msg.ToolName() {
-			continue
-		}
-		if best == -1 {
-			best = i
-		}
-		if canonical(x.Request.Args) == canonical(string(msg.Params)) {
+	if group := e.groupForLocked(msg); group != "" {
+		for _, i := range e.groups[group] {
+			x := &e.exchanges[i]
+			if x.Used || x.Response.Raw == "" {
+				continue
+			}
+			if x.Request.Method != msg.Method || x.Request.Tool != msg.ToolName() {
+				continue
+			}
 			best = i
 			break
+		}
+	}
+
+	if best == -1 {
+		for i := range e.exchanges {
+			x := &e.exchanges[i]
+			if x.Used || x.Response.Raw == "" {
+				continue
+			}
+			if x.Request.Method != msg.Method || x.Request.Tool != msg.ToolName() {
+				continue
+			}
+			if best == -1 {
+				best = i
+			}
+			if canonical(x.Request.Args) == canonical(string(msg.Params)) {
+				best = i
+				break
+			}
 		}
 	}
 
@@ -136,8 +195,13 @@ func (e *Engine) Respond(line []byte) ([]byte, bool) {
 	x := &e.exchanges[best]
 	x.Used = true
 	e.last = x
+	e.lastNotes = e.notifications[best]
+	delete(e.notifications, best)
 
-	if canonical(x.Request.Args) != canonical(string(msg.Params)) {
+	// A retry legitimately carries extra fields (requestState, inputResponses), so only
+	// compare arguments on a first attempt.
+	if !msg.HasInputResponses() && msg.RequestState() == "" &&
+		canonical(x.Request.Args) != canonical(string(msg.Params)) {
 		e.divergences = append(e.divergences, Divergence{
 			Kind:   "args_changed",
 			Index:  int64(best),
@@ -147,6 +211,34 @@ func (e *Engine) Respond(line []byte) ([]byte, bool) {
 		})
 	}
 	return []byte(x.Response.Raw), true
+}
+
+func (e *Engine) groupForLocked(msg *jsonrpc.Message) string {
+	if state := msg.RequestState(); state != "" {
+		if group, ok := e.stateToGroup[state]; ok {
+			return group
+		}
+	}
+	if msg.HasInputResponses() {
+		key := msg.Method + "\x00" + msg.ToolName()
+		if groups := e.groupsByKey[key]; len(groups) > 0 {
+			return groups[len(groups)-1]
+		}
+	}
+	return ""
+}
+
+func requestStateOf(args string) string {
+	if args == "" {
+		return ""
+	}
+	var p struct {
+		RequestState string `json:"requestState"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil {
+		return ""
+	}
+	return p.RequestState
 }
 
 // Options configures ServeStdio.
@@ -190,19 +282,30 @@ func ServeStdio(ctx context.Context, eng *Engine, o Options) error {
 		line, readErr := br.ReadBytes('\n')
 		if len(line) > 0 {
 			frame := trim(line)
-			rec.add(event.ClientToServer, frame, "", "")
 
 			resp, _ := eng.Respond(frame)
+			x := eng.LastUsed()
+			callID := ""
+			if x != nil {
+				callID = x.Request.CallID
+			}
+			rec.add(event.ClientToServer, frame, "", "", callID)
+
 			if len(resp) > 0 {
 				if _, err := stdin.Write(append(resp, '\n')); err != nil {
 					break
 				}
-				x := eng.LastUsed()
 				if x != nil {
-					rec.add(event.ServerToClient, resp, x.Request.Method, x.Request.Tool)
+					rec.add(event.ServerToClient, resp, x.Request.Method, x.Request.Tool, callID)
 				} else {
-					rec.add(event.ServerToClient, resp, "", "")
+					rec.add(event.ServerToClient, resp, "", "", callID)
 				}
+			}
+			for _, note := range eng.TakeNotifications() {
+				if _, err := stdin.Write(append(note, '\n')); err != nil {
+					break
+				}
+				rec.add(event.ServerToClient, note, "", "", callID)
 			}
 		}
 		if readErr != nil {
@@ -221,7 +324,7 @@ type recorder struct {
 	seq       int64
 }
 
-func (r *recorder) add(dir event.Direction, raw []byte, method, tool string) event.Event {
+func (r *recorder) add(dir event.Direction, raw []byte, method, tool, callID string) event.Event {
 	r.seq++
 	ev := event.Event{
 		SessionID: r.sessionID,
@@ -230,8 +333,12 @@ func (r *recorder) add(dir event.Direction, raw []byte, method, tool string) eve
 		Direction: dir,
 		Raw:       r.red.String(string(raw)),
 		Size:      len(raw),
+		CallID:    callID,
 	}
 	if msg, err := jsonrpc.Decode(raw); err == nil {
+		if msg.SubscriptionID() != "" {
+			ev.SubscriptionID = msg.SubscriptionID()
+		}
 		ev.Method = msg.Method
 		ev.Tool = msg.ToolName()
 		if method != "" {
@@ -250,10 +357,14 @@ func (r *recorder) add(dir event.Direction, raw []byte, method, tool string) eve
 			if msg.Error != nil {
 				ev.Status = event.StatusError
 			}
-			_, isErr := jsonrpc.ParseResult(msg.Result)
-			if isErr {
+			resultType, isErr := jsonrpc.ParseResult(msg.Result)
+			switch {
+			case isErr:
 				ev.Status = event.StatusToolError
+			case resultType == "input_required":
+				ev.Status = event.StatusInputRequired
 			}
+			ev.ResultType = resultType
 			ev.Result = r.red.String(compact(msg.Result))
 		default:
 			ev.Status = event.StatusPending

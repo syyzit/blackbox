@@ -256,8 +256,8 @@ func TestToolDefinitionsAreHashed(t *testing.T) {
 		if len(e.ToolDefs) == 0 {
 			continue
 		}
-		if len(e.ToolDefs) != 3 {
-			t.Fatalf("expected 3 tool definitions, got %d: %+v", len(e.ToolDefs), e.ToolDefs)
+		if len(e.ToolDefs) != 4 {
+			t.Fatalf("expected 4 tool definitions, got %d: %+v", len(e.ToolDefs), e.ToolDefs)
 		}
 		for _, d := range e.ToolDefs {
 			if len(d.Hash) != 16 {
@@ -310,4 +310,88 @@ func TestCostFromReportedUsage(t *testing.T) {
 		return
 	}
 	t.Fatal("echo response not recorded")
+}
+
+func TestMRTRRoundsShareOneCallID(t *testing.T) {
+	sink := &memSink{}
+	cli, errCh := startProxied(t, sink, nil)
+
+	first, err := cli.Call("tools/call", map[string]any{
+		"name":      "confirm",
+		"arguments": map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("first round: %v", err)
+	}
+	if !strings.Contains(string(first), "input_required") {
+		t.Fatalf("expected input_required, got %s", first)
+	}
+
+	second, err := cli.Call("tools/call", map[string]any{
+		"name":           "confirm",
+		"arguments":      map[string]any{},
+		"inputResponses": map[string]any{"confirm": map[string]any{"action": "accept"}},
+		"requestState":   "state-confirm-1",
+	})
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if !strings.Contains(string(second), "confirmed") {
+		t.Fatalf("expected the final result, got %s", second)
+	}
+
+	stop(t, cli, errCh)
+
+	var (
+		requests  []event.Event
+		responses []event.Event
+	)
+	for _, e := range sink.snapshot() {
+		if e.Tool != "confirm" {
+			continue
+		}
+		if e.Direction == event.ClientToServer {
+			requests = append(requests, e)
+		} else {
+			responses = append(responses, e)
+		}
+	}
+	if len(requests) != 2 || len(responses) != 2 {
+		t.Fatalf("expected 2 requests and 2 responses, got %d/%d", len(requests), len(responses))
+	}
+	if requests[0].CallID == "" || requests[0].CallID != requests[1].CallID {
+		t.Fatalf("MRTR rounds were not grouped: %q vs %q", requests[0].CallID, requests[1].CallID)
+	}
+	if responses[0].Status != event.StatusInputRequired {
+		t.Fatalf("first response status = %q", responses[0].Status)
+	}
+	if responses[1].Status != event.StatusOK {
+		t.Fatalf("second response status = %q", responses[1].Status)
+	}
+	if responses[0].CallID != requests[0].CallID {
+		t.Fatalf("response lost the call id: %+v", responses[0])
+	}
+}
+
+func TestMRTRDoesNotLeakIntoUnrelatedCalls(t *testing.T) {
+	sink := &memSink{}
+	cli, errCh := startProxied(t, sink, nil)
+
+	if _, err := cli.Call("tools/call", map[string]any{"name": "confirm", "arguments": map[string]any{}}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := cli.Call("tools/call", map[string]any{"name": "echo", "arguments": map[string]any{"text": "after"}}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	stop(t, cli, errCh)
+
+	ids := map[string]bool{}
+	for _, e := range sink.snapshot() {
+		if e.Direction == event.ClientToServer && e.Method == "tools/call" {
+			ids[e.CallID] = true
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected two distinct logical calls, got %v", ids)
+	}
 }

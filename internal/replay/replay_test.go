@@ -158,3 +158,75 @@ func TestEngineFlagsChangedArguments(t *testing.T) {
 		t.Fatalf("expected args_changed, got %+v", divs)
 	}
 }
+
+func TestEngineGroupsMRTRRounds(t *testing.T) {
+	req1 := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"confirm","arguments":{}}}`
+	resp1 := `{"jsonrpc":"2.0","id":1,"result":{"resultType":"input_required","requestState":"s1"}}`
+	req2 := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"confirm","arguments":{},"inputResponses":{"confirm":{"action":"accept"}},"requestState":"s1"}}`
+	resp2 := `{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","content":[{"type":"text","text":"confirmed"}]}}`
+
+	events := []event.Event{
+		{Direction: event.ClientToServer, Method: "tools/call", Tool: "confirm", ID: "1", Status: event.StatusPending, CallID: "call-1", Raw: req1, Args: `{"name":"confirm","arguments":{}}`},
+		{Direction: event.ServerToClient, Method: "tools/call", Tool: "confirm", ID: "1", Status: event.StatusInputRequired, CallID: "call-1", Raw: resp1, Result: `{"resultType":"input_required","requestState":"s1"}`},
+		{Direction: event.ClientToServer, Method: "tools/call", Tool: "confirm", ID: "2", Status: event.StatusPending, CallID: "call-1", Raw: req2, Args: `{"name":"confirm","arguments":{},"inputResponses":{"confirm":{"action":"accept"}},"requestState":"s1"}`},
+		{Direction: event.ServerToClient, Method: "tools/call", Tool: "confirm", ID: "2", Status: event.StatusOK, CallID: "call-1", Raw: resp2, Result: `{"resultType":"complete","content":[{"type":"text","text":"confirmed"}]}`},
+	}
+
+	eng := New(events)
+	got, matched := eng.Respond([]byte(req1))
+	if !matched || string(got) != resp1 {
+		t.Fatalf("first round: matched=%v got=%s", matched, got)
+	}
+	got, matched = eng.Respond([]byte(req2))
+	if !matched {
+		t.Fatal("MRTR retry was treated as an extra call")
+	}
+	if string(got) != resp2 {
+		t.Fatalf("retry got %s", got)
+	}
+	if divs := eng.Divergences(); len(divs) != 0 {
+		t.Fatalf("unexpected divergences: %+v", divs)
+	}
+}
+
+func TestEngineDrainsNotifications(t *testing.T) {
+	req := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+	resp := `{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","tools":[]}}`
+	note := `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`
+
+	eng := New([]event.Event{
+		{Direction: event.ClientToServer, Method: "tools/list", ID: "1", Status: event.StatusPending, Raw: req},
+		{Direction: event.ServerToClient, ID: "1", Status: event.StatusOK, Raw: resp, Result: `{"resultType":"complete","tools":[]}`},
+		{Direction: event.ServerToClient, Method: "notifications/progress", Status: event.StatusNotify, Raw: note},
+	})
+
+	if _, ok := eng.Respond([]byte(req)); !ok {
+		t.Fatal("no response")
+	}
+	notes := eng.TakeNotifications()
+	if len(notes) != 1 || string(notes[0]) != note {
+		t.Fatalf("notification was not replayed: %q", notes)
+	}
+	if len(eng.TakeNotifications()) != 0 {
+		t.Fatal("notifications should be drained once")
+	}
+}
+
+func TestDiffGroupsMRTRRounds(t *testing.T) {
+	mk := func(final string) []event.Event {
+		return []event.Event{
+			{Direction: event.ClientToServer, Method: "tools/call", Tool: "confirm", ID: "1", Status: event.StatusPending, CallID: "call-1", Args: `{"name":"confirm","arguments":{}}`},
+			{Direction: event.ServerToClient, ID: "1", Status: event.StatusInputRequired, CallID: "call-1", Result: `{"resultType":"input_required","requestState":"s1"}`},
+			{Direction: event.ClientToServer, Method: "tools/call", Tool: "confirm", ID: "2", Status: event.StatusPending, CallID: "call-1", Args: `{"name":"confirm","arguments":{},"inputResponses":{"confirm":{"action":"accept"}},"requestState":"s1"}`},
+			{Direction: event.ServerToClient, ID: "2", Status: event.StatusOK, CallID: "call-1", Result: final},
+		}
+	}
+
+	report := Diff(mk(`{"content":[{"text":"confirmed"}]}`), mk(`{"content":[{"text":"confirmed"}]}`))
+	if !report.Identical {
+		t.Fatalf("identical MRTR runs diverged: %+v", report.Changes)
+	}
+	if report.CallsA != 1 || report.CallsB != 1 {
+		t.Fatalf("rounds were not collapsed: %d/%d", report.CallsA, report.CallsB)
+	}
+}

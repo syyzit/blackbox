@@ -141,7 +141,7 @@ func TestHTTPProxyStreamsSSE(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		fl := w.(http.Flusher)
-		for _, line := range []string{`data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`, "", `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":2}}`} {
+		for _, line := range []string{`data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1,"_meta":{"io.modelcontextprotocol/subscriptionId":"sub-1"}}}`, "", `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":2,"_meta":{"io.modelcontextprotocol/subscriptionId":"sub-1"}}}`} {
 			io.WriteString(w, line+"\n")
 			fl.Flush()
 		}
@@ -156,7 +156,10 @@ func TestHTTPProxyStreamsSSE(t *testing.T) {
 	front := httptest.NewServer(h)
 	defer front.Close()
 
-	resp, err := http.Post(front.URL, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen"}`))
+	req, _ := http.NewRequest(http.MethodPost, front.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen"}`))
+	req.Header.Set("Mcp-Method", "subscriptions/listen")
+	req.Header.Set("Mcp-Name", "feed")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +171,21 @@ func TestHTTPProxyStreamsSSE(t *testing.T) {
 
 	var streamed int
 	for _, e := range sink.snapshot() {
-		if e.Direction == event.ServerToClient && strings.Contains(e.Raw, "progress") {
-			streamed++
+		if e.Direction != event.ServerToClient || e.Method != "notifications/progress" {
+			continue
+		}
+		streamed++
+		if e.Tool != "feed" {
+			t.Fatalf("streamed notification was not attributed to the subscription: %+v", e)
+		}
+		if e.SubscriptionID != "sub-1" {
+			t.Fatalf("subscription id was not captured: %+v", e)
+		}
+		if strings.HasPrefix(e.Raw, "data:") {
+			t.Fatalf("SSE envelope leaked into the recorded payload: %q", e.Raw)
+		}
+		if !json.Valid([]byte(e.Raw)) {
+			t.Fatalf("recorded SSE payload is not JSON: %q", e.Raw)
 		}
 	}
 	if streamed != 2 {

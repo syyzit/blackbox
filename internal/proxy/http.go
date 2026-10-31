@@ -153,7 +153,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		h.streamSSE(w, resp.Body)
+		h.streamSSE(w, resp.Body, name)
 		return
 	}
 
@@ -165,7 +165,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(respBody)
 }
 
-func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader) {
+func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader, name string) {
 	flusher, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(body, 64*1024)
 	for {
@@ -175,7 +175,17 @@ func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader) {
 			if flusher != nil {
 				flusher.Flush()
 			}
-			h.rec.record(event.ServerToClient, bytes.TrimSpace(line), routeHint{}, nil, false)
+
+			// Record the JSON payload, not the SSE envelope, so streamed frames are
+			// queryable like any other frame. The fallback name attributes a
+			// notification to the subscription it belongs to.
+			payload := bytes.TrimSpace(line)
+			if bytes.HasPrefix(payload, []byte("data:")) {
+				payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
+			}
+			if len(payload) > 0 && !bytes.Equal(payload, []byte("[DONE]")) {
+				h.rec.record(event.ServerToClient, payload, routeHint{name: name}, nil, false)
+			}
 		}
 		if err != nil {
 			return

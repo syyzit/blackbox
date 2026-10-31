@@ -190,6 +190,10 @@ function renderTimeline() {
   const start = state.meta ? new Date(state.meta.startedAt).getTime() : 0;
   const filter = state.filter.trim().toLowerCase();
   const maxDur = Math.max(1, ...events.map((e) => e.durationMs || 0));
+  const callRounds = {};
+  for (const e of events) {
+    if (e.direction === "c2s" && e.callId) callRounds[e.callId] = (callRounds[e.callId] || 0) + 1;
+  }
 
   events.forEach((e, i) => {
     const hay = `${e.method || ""} ${e.tool || ""} ${e.status || ""}`.toLowerCase();
@@ -205,6 +209,7 @@ function renderTimeline() {
     const dirClass = e.direction === "c2s" ? "dir" : "dir out";
     const changed = (e.toolDefs || []).some((d) => d.changed);
     const redacted = (e.raw || "").includes("[REDACTED");
+    const rounds = e.callId ? callRounds[e.callId] || 0 : 0;
     const barW = e.durationMs ? Math.max(2, Math.round((e.durationMs / maxDur) * 42)) : 0;
 
     tr.innerHTML = `
@@ -215,8 +220,8 @@ function renderTimeline() {
       <td class="method">${esc(e.method || "—")}${
         e.toolDefs && e.toolDefs.length ? `<span class="badge">${e.toolDefs.length} tools</span>` : ""
       }${changed ? '<span class="badge bad">rug-pull</span>' : ""}${
-        redacted ? '<span class="badge redact">redacted</span>' : ""
-      }</td>
+        rounds > 1 ? `<span class="badge">mrtr ×${rounds}</span>` : ""
+      }${redacted ? '<span class="badge redact">redacted</span>' : ""}</td>
       <td class="tool">${esc(e.tool || "")}</td>
       <td class="ms">${e.durationMs ? `<span class="bar" style="width:${barW}px"></span>${e.durationMs}` : ""}</td>`;
 
@@ -285,6 +290,8 @@ function renderDetail() {
     e.durationMs ? `${e.durationMs}ms` : "",
     `${e.size || 0}B`,
     e.toolHash ? `hash ${e.toolHash}` : "",
+    e.callId ? `call ${e.callId}` : "",
+    e.subscriptionId ? `sub ${e.subscriptionId}` : "",
   ]
     .filter(Boolean)
     .join("  ·  ");

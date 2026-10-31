@@ -58,6 +58,11 @@ func NewServer() *Server {
 				Description: "Always fails. Useful for testing error capture.",
 				InputSchema: json.RawMessage(`{"type":"object"}`),
 			},
+			{
+				Name:        "confirm",
+				Description: "Requires an MRTR round trip before completing.",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			},
 		},
 		Handle: defaultHandle,
 	}
@@ -131,13 +136,32 @@ func (s *Server) respond(w io.Writer, msg *jsonrpc.Message) error {
 		result = map[string]any{"tools": s.Tools}
 	case "tools/call":
 		var p struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
+			Name           string          `json:"name"`
+			Arguments      json.RawMessage `json:"arguments"`
+			InputResponses json.RawMessage `json:"inputResponses"`
+			RequestState   string          `json:"requestState"`
 		}
 		if err := json.Unmarshal(msg.Params, &p); err != nil {
 			return s.writeError(w, msg.ID, -32602, "invalid params")
 		}
+		if p.Name == "confirm" && len(p.InputResponses) == 0 {
+			// First round: ask for input and hand back opaque state.
+			result = map[string]any{
+				"resultType": "input_required",
+				"inputRequests": map[string]any{
+					"confirm": map[string]any{
+						"method": "elicitation/create",
+						"params": map[string]any{"message": "please confirm"},
+					},
+				},
+				"requestState": "state-confirm-1",
+			}
+			break
+		}
 		reply := s.Handle(p.Name, p.Arguments)
+		if p.Name == "confirm" {
+			reply = Reply{Text: "confirmed", UsageIn: 10, UsageOut: 5}
+		}
 		payload := map[string]any{
 			"resultType": "complete",
 			"content":    []map[string]any{{"type": "text", "text": reply.Text}},

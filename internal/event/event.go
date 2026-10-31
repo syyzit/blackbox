@@ -64,6 +64,11 @@ type Event struct {
 	ToolDefs []ToolDef `json:"toolDefs,omitempty"`
 	// ToolHash is the definition hash in force when this call was made.
 	ToolHash string `json:"toolHash,omitempty"`
+	// CallID groups the frames of one logical call. An MRTR call spans several
+	// JSON-RPC ids (initial request plus retries); they all share this id.
+	CallID string `json:"callId,omitempty"`
+	// SubscriptionID correlates a notification with its subscriptions/listen stream.
+	SubscriptionID string `json:"subscriptionId,omitempty"`
 	// Decision and DecisionReason are set when a policy gate evaluated the frame.
 	Decision       string `json:"decision,omitempty"`
 	DecisionReason string `json:"decisionReason,omitempty"`
