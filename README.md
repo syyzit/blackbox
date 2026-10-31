@@ -43,6 +43,9 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
   to a recorded session.
 - **Coverage check**: snapshots the watched tree before and after a session and flags
   files that changed with no recorded write, so a blind spot is visible instead of silent.
+- **Editor plug-in**: the bundled OpenCode plugin records built-in tool calls
+  (`shell`, `read`, `write`, `edit`) through `blackbox ingest`, skipping MCP tools so
+  nothing is counted twice.
 
 ## Install
 
@@ -239,7 +242,9 @@ Each change is classified:
   change even though the path was not named.
 - **unrecorded** — nothing in the recording explains it.
 
-The UI shows a `coverage gap` badge and a coverage tab. The check skips `.git`,
+Changes are matched against every recorded event in the session's time window, so a
+built-in write captured by the editor plugin still counts as covered. The UI shows a
+`coverage gap` badge and a coverage tab. The check skips `.git`,
 `node_modules`, `vendor`, build output, and similar directories, caps hashing at 256 MB,
 and marks the result truncated rather than pretending it was complete.
 
@@ -312,6 +317,8 @@ CI runs `go vet` and `go test -race` on every push.
   separately, since that duplicates the fields above.
 - Coverage is a heuristic. It catches changes it can see on disk; it cannot prove that a
   recorded shell call is what caused one, and it only covers the connection's lifetime.
+- `blackbox ingest` trusts the local caller. Anyone who can run it can add events, so it
+  is an integration hook, not an authenticated API.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.

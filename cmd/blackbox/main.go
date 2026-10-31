@@ -68,6 +68,8 @@ func run(args []string) int {
 		return cmdPolicy(args[1:])
 	case "coverage":
 		return cmdCoverage(args[1:])
+	case "ingest":
+		return cmdIngest(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "version", "--version", "-v":
@@ -132,6 +134,9 @@ Usage:
 
   blackbox coverage [-home dir] <session-id|prefix>
         Show which file changes the recording did not account for.
+
+  blackbox ingest [-home dir] < event.json
+        Append one externally recorded tool call (used by editor plugins).
 
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.

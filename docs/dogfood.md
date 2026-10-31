@@ -94,6 +94,40 @@ Four findings that only a real agent could surface:
    counted as "calls" in `stats` and `report`. Both now count only `tools/call` responses,
    which is what a person means by a call.
 
+## The plugin: built-in tools too
+
+OpenCode's built-in tools (`shell`, `read`, `write`, `edit`, ...) never touch an MCP
+server, so the proxy cannot see them. `plugins/opencode-blackbox` hooks
+`tool.execute.before` / `tool.execute.after`, times the call, and pipes it to:
+
+```sh
+blackbox ingest < event.json
+```
+
+which writes a normal `tools/call` pair into a session named `oc-<opencode-session>`.
+Configure it in the local `opencode.json`:
+
+```jsonc
+"plugins": [
+  {
+    "package": "./plugins/opencode-blackbox",
+    "options": {
+      "binary": "/absolute/path/to/blackbox",
+      "skipPrefixes": ["repo_", "shell_"]
+    }
+  }
+]
+```
+
+`skipPrefixes` (plus the live MCP server list, read at setup) keeps MCP calls from being
+recorded twice. Verified against a real turn: the built-in `shell` call appeared as an
+`opencode builtins` session with its timing and output, while a `repo_list_directory`
+call landed only in the MCP session.
+
+Because built-ins and MCP traffic may live in different sessions, the coverage check
+now classifies changes against **every event in the session's time window**, not just the
+session's own frames. A built-in write recorded by the plugin still counts as `covered`.
+
 ## Coverage catches the bypass
 
 The point of the coverage check is to make the cooperative boundary honest. Verified with

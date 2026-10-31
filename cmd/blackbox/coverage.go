@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spacecr8ed/blackbox/internal/coverage"
 	"github.com/spacecr8ed/blackbox/internal/store"
@@ -36,7 +37,7 @@ func finishCoverage(sess *store.Session, before *coverage.Snapshot) {
 		fmt.Fprintf(os.Stderr, "blackbox · coverage: %v\n", err)
 		return
 	}
-	_, events, err := store.Find(sess.Home, sess.Meta.ID)
+	events, err := store.EventsBetween(sess.Home, sess.Meta.StartedAt, time.Now().UTC())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "blackbox · coverage: %v\n", err)
 		return

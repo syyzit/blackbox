@@ -123,7 +123,18 @@ func (s *Session) Emit(e event.Event) error {
 		}
 	}
 
-	_, err := s.db.Exec(
+	if err := insertEvent(s.db, e); err != nil {
+		return fmt.Errorf("store: insert event: %w", err)
+	}
+	return nil
+}
+
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func insertEvent(db execer, e event.Event) error {
+	_, err := db.Exec(
 		`INSERT INTO events
 		 (session_id, seq, at, direction, method, tool, tool_hash, rpc_id, status, result_type,
 		  duration_ms, size, args, result, error, raw, usage_in, usage_out, cost_usd,
@@ -133,10 +144,7 @@ func (s *Session) Emit(e event.Event) error {
 		e.Status, e.ResultType, e.DurationMS, e.Size, e.Args, e.Result, e.Error, e.Raw,
 		e.UsageIn, e.UsageOut, e.CostUSD, e.CallID, e.SubscriptionID,
 	)
-	if err != nil {
-		return fmt.Errorf("store: insert event: %w", err)
-	}
-	return nil
+	return err
 }
 
 // Ledger exposes the cross-session tool-definition ledger.
