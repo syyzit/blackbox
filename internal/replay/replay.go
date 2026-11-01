@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
-	"github.com/spacecr8ed/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/redact"
 )
 
 // Exchange is one recorded request paired with the response it received.

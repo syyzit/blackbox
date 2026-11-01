@@ -28,6 +28,13 @@ func TestDefaultRedactsCredentialShapes(t *testing.T) {
 	}
 }
 
+func TestAnthropicKeysGetTheirOwnLabel(t *testing.T) {
+	out := Default().String(`{"key":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}`)
+	if !strings.Contains(out, "[REDACTED:anthropic-key]") {
+		t.Fatalf("anthropic key labelled wrongly: %s", out)
+	}
+}
+
 func TestRedactionKeepsJSONValid(t *testing.T) {
 	r := Default()
 	in := `{"api_key":"supersecretvalue","text":"keep me","n":3}`

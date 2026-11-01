@@ -9,8 +9,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/policy"
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 func cmdTrace(args []string) int {

@@ -1,6 +1,6 @@
 package policy
 
-import "github.com/spacecr8ed/blackbox/internal/event"
+import "github.com/syyzit/blackbox/internal/event"
 
 // Impact is what a candidate policy would have done to one recorded call.
 type Impact struct {

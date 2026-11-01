@@ -1,14 +1,15 @@
 package proxy_test
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
-	"github.com/spacecr8ed/blackbox/internal/proxy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/proxy"
+	"github.com/syyzit/blackbox/internal/redact"
 )
 
 type memAudit struct {
@@ -268,4 +269,64 @@ func TestAuditArgsAreRedacted(t *testing.T) {
 	if !strings.Contains(recs[0].Args, "[REDACTED") {
 		t.Fatalf("audit args were not redacted: %s", recs[0].Args)
 	}
+}
+
+func TestPolicyBlocksBatchContainingDeniedCall(t *testing.T) {
+	sink := &memSink{}
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink: sink, Policy: denyPolicy("fail"), Server: "fake-server", ServerKey: "srvkey",
+		Ledger: newMapLedger(), Audit: &memAudit{},
+	})
+
+	// Smuggling the denied call inside a batch must not get it past the gate.
+	batch := `[{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"echo","arguments":{"text":"a"}}},` +
+		`{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"fail","arguments":{}}}]`
+	if err := cli.Send([]byte(batch)); err != nil {
+		t.Fatal(err)
+	}
+	line, err := cli.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replies []struct {
+		ID    int `json:"id"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(line, &replies); err != nil {
+		t.Fatalf("expected a batch of errors, got %s", line)
+	}
+	if len(replies) != 2 {
+		t.Fatalf("expected an error for each request, got %s", line)
+	}
+	for _, r := range replies {
+		if r.Error == nil || !strings.Contains(r.Error.Message, "blocked by blackbox policy") {
+			t.Fatalf("request %d was not blocked: %s", r.ID, line)
+		}
+	}
+
+	stop(t, cli, errCh)
+	for _, e := range sink.snapshot() {
+		if e.Direction == event.ServerToClient && !e.Synthetic {
+			t.Fatalf("the server answered a blocked batch: %+v", e)
+		}
+	}
+}
+
+type pendingLedger struct{ *mapLedger }
+
+func (pendingLedger) IsPending(server, tool string) bool { return tool == "echo" }
+
+func TestRugPullFromEarlierSessionBlocksBeforeToolsList(t *testing.T) {
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink: &memSink{}, Policy: policy.Default(), Server: "fake-server", ServerKey: "srvkey",
+		Ledger: pendingLedger{newMapLedger()}, Audit: &memAudit{},
+	})
+	// No tools/list in this session: the pending change comes from the saved ledger.
+	_, err := cli.Call("tools/call", map[string]any{"name": "echo", "arguments": map[string]any{"text": "x"}})
+	if err == nil || !strings.Contains(err.Error(), "changed since it was last approved") {
+		t.Fatalf("changed tool was not blocked from the first frame: %v", err)
+	}
+	stop(t, cli, errCh)
 }

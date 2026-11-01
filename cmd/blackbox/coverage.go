@@ -8,8 +8,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 func snapshotCoverage(root string) *coverage.Snapshot {

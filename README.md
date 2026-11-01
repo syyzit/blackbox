@@ -28,8 +28,8 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
   subscription id and attributed tool, not as opaque lines.
 - **Run diff**: same task twice, see exactly which calls diverged.
 - **Policy gate**: allow / deny / require-approval per server, tool, and argument regex,
-  with an audit log. Approvals happen on `/dev/tty`, never on the MCP stream, so an agent
-  cannot answer its own prompt.
+  with an audit log. Approvals happen on the terminal (`/dev/tty`, or the Windows
+  console), never on the MCP stream, so an agent cannot answer its own prompt.
 - **Web UI**: session browser, scrubbable timeline that follows a live recording,
   frame inspector, run diff.
 - **Redacted export**: one JSON incident bundle per session, safe to attach to a bug
@@ -205,10 +205,22 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
   Switch to `"enforce"` when the rules look right in `blackbox decisions` and `report`.
 - `allow` forwards the call.
 - `deny` blocks it with a JSON-RPC error and records the decision.
-- `require_approval` asks on the controlling terminal; a timeout
-  (`-approval-timeout`, default 1m) or a non-interactive session denies.
-- When `rugPullBlock` is on, a tool whose definition hash changed since the previous run
-  is denied until you intentionally re-approve it.
+- `require_approval` asks on the controlling terminal (`/dev/tty`, or the console on
+  Windows); a timeout (`-approval-timeout`, default 1m) or a non-interactive session
+  denies.
+- `args` regexes match the JSON-decoded, compactly re-encoded `params`, so escapes such as
+  ` ` or `\/` cannot hide a match. Write them against the compact form, for example
+  `"command":"rm -rf`.
+- A batch (a JSON array of calls) is blocked as a whole if any call in it is denied.
+- The first definition seen for each tool is trusted and stored in
+  `~/.blackbox/tooldefs.json`. When `rugPullBlock` is on, a tool whose definition later
+  changes is denied, across restarts, until you review and accept it:
+
+```sh
+blackbox tools                          # list changed definitions
+blackbox tools accept                   # accept all of them
+blackbox tools accept -server <key> read_file
+```
 
 Every decision is written to the audit log with its mode and surfaced in the UI.
 
@@ -379,6 +391,11 @@ CI runs `go vet` and `go test -race` on every push.
 - Built-in approvals rely on an `ask` rule for the `blackbox` permission action. Without
   it, OpenCode's default `*/* allow` rule approves the prompt automatically.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
+- The UI and the HTTP proxy only answer requests whose `Host` is an IP address or
+  `localhost`, which blocks DNS-rebinding attacks from web pages. Reach them by IP or
+  `localhost`, not through a custom host name.
+- The HTTP proxy refuses a request whose `Mcp-Method` / `Mcp-Name` headers disagree with
+  its JSON-RPC body.
 - An approval prompt blocks the proxied stream while it waits, bounded by
   `-approval-timeout`. A fully asynchronous approval queue is future work.
 - Tested against the protocol spec and the bundled fake server; real-world servers vary.

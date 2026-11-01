@@ -57,6 +57,42 @@ func TestArgsRegex(t *testing.T) {
 	}
 }
 
+func TestArgsRegexSeesThroughJSONEscapes(t *testing.T) {
+	p := &Policy{Default: Allow, Rules: []Rule{
+		{Tool: "*", Args: `rm -rf`, Action: Deny},
+		{Tool: "*", Args: `"path":"/etc/`, Action: Deny},
+		{Tool: "*", Args: `<script>`, Action: Deny},
+	}}
+	if err := p.validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range []string{
+		`{"name":"shell","arguments":{"command":"rm -rf /"}}`,
+		`{"name":"shell","arguments":{"command":"rm -rf /"}}`,
+		`{"name":"read","arguments":{"path" : "\/etc\/passwd"}}`,
+		`{"name":"read","arguments":{"path":"/etc/shadow"}}`,
+		`{"name":"write","arguments":{"text":"<script>"}}`,
+	} {
+		if got := p.Decide(Request{Tool: "x", Args: args}); got.Action != Deny {
+			t.Errorf("escaped args slipped past the rule: %s -> %s", args, got.Action)
+		}
+	}
+	if got := p.Decide(Request{Tool: "x", Args: `{"arguments":{"n":12345678901234567890}}`}); got.Action != Allow {
+		t.Fatalf("large number: %s", got.Action)
+	}
+}
+
+func TestCanonicalArgsKeepsNonJSON(t *testing.T) {
+	for _, in := range []string{"", "not json", `{"a":1} trailing`} {
+		if got := CanonicalArgs(in); got != in {
+			t.Errorf("CanonicalArgs(%q) = %q", in, got)
+		}
+	}
+	if got := CanonicalArgs(`{"n": 12345678901234567890}`); got != `{"n":12345678901234567890}` {
+		t.Errorf("number precision lost: %s", got)
+	}
+}
+
 func TestShadowModeParses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.json")
 	if err := os.WriteFile(path, []byte(`{"mode":"shadow","rules":[{"tool":"shell","action":"deny"}]}`), 0o644); err != nil {

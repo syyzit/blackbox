@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spacecr8ed/blackbox/internal/mcptest"
+	"github.com/syyzit/blackbox/internal/mcptest"
 )
 
 func main() {

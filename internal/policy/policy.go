@@ -2,6 +2,7 @@
 package policy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,7 +38,9 @@ type Rule struct {
 	Action Action `json:"action"`
 	Reason string `json:"reason,omitempty"`
 
-	argsRe *regexp.Regexp
+	argsRe   *regexp.Regexp
+	serverRe *regexp.Regexp
+	toolRe   *regexp.Regexp
 }
 
 // Policy is the on-disk policy file.
@@ -109,6 +112,8 @@ func (p *Policy) validate() error {
 			}
 			r.argsRe = re
 		}
+		r.serverRe = compileWildcard(r.Server)
+		r.toolRe = compileWildcard(r.Tool)
 	}
 	return nil
 }
@@ -133,13 +138,26 @@ func (p *Policy) Decide(r Request) Decision {
 	if p == nil {
 		return Decision{Action: Allow, Mode: ModeEnforce, Rule: -1, Reason: "no policy"}
 	}
+	args, canonical := "", false
 	for i := range p.Rules {
 		rule := &p.Rules[i]
-		if !wildcard(rule.Server, r.Server) || !wildcard(rule.Tool, r.Tool) {
+		if !matchCompiled(rule.serverRe, rule.Server, r.Server) || !matchCompiled(rule.toolRe, rule.Tool, r.Tool) {
 			continue
 		}
-		if rule.argsRe != nil && !rule.argsRe.MatchString(r.Args) {
-			continue
+		if rule.Args != "" {
+			re := rule.argsRe
+			if re == nil { // a Policy built in code without Load
+				var err error
+				if re, err = regexp.Compile(rule.Args); err != nil {
+					continue
+				}
+			}
+			if !canonical {
+				args, canonical = CanonicalArgs(r.Args), true
+			}
+			if !re.MatchString(args) {
+				continue
+			}
 		}
 		reason := rule.Reason
 		if reason == "" {
@@ -210,11 +228,63 @@ func (t TimeoutApprover) Approve(r ApprovalRequest) bool {
 	}
 }
 
+// matchCompiled uses the glob compiled by validate, and falls back to compiling it on
+// the spot for a Policy built in code without Load.
+func matchCompiled(re *regexp.Regexp, pattern, s string) bool {
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	if re != nil {
+		return re.MatchString(s)
+	}
+	return wildcard(pattern, s)
+}
+
+func compileWildcard(pattern string) *regexp.Regexp {
+	if pattern == "" || pattern == "*" {
+		return nil
+	}
+	re, err := regexp.Compile(wildcardPattern(pattern))
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
+// CanonicalArgs re-encodes JSON arguments so equivalent spellings look the same to an
+// args regex: escapes such as   or \/ are decoded, whitespace between tokens is
+// dropped, and <, > and & are not escaped. Text that is not JSON is returned as is.
+//
+// Rules are written against the compact form, e.g. "command":"rm -rf.
+func CanonicalArgs(raw string) string {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || dec.More() {
+		return raw
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return raw
+	}
+	return strings.TrimRight(buf.String(), "\n")
+}
+
 // wildcard matches a glob where * matches any run of characters and ? matches one.
 func wildcard(pattern, s string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
 	}
+	re, err := regexp.Compile(wildcardPattern(pattern))
+	if err != nil {
+		return false
+	}
+	return re.MatchString(s)
+}
+
+func wildcardPattern(pattern string) string {
 	var b strings.Builder
 	b.WriteString("^")
 	for _, r := range pattern {
@@ -228,9 +298,5 @@ func wildcard(pattern, s string) bool {
 		}
 	}
 	b.WriteString("$")
-	re, err := regexp.Compile(b.String())
-	if err != nil {
-		return false
-	}
-	return re.MatchString(s)
+	return b.String()
 }

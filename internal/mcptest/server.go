@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
 )
 
 // Tool is an MCP tool definition.

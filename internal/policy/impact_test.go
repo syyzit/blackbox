@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/event"
 )
 
 func impactEvents() []event.Event {

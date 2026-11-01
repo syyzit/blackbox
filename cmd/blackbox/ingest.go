@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/redact"
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 // ingestPayload is the envelope an editor plugin sends on stdin.

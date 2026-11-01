@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,14 +16,14 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
-	"github.com/spacecr8ed/blackbox/internal/proxy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
-	"github.com/spacecr8ed/blackbox/internal/replay"
-	"github.com/spacecr8ed/blackbox/internal/store"
-	"github.com/spacecr8ed/blackbox/internal/ui"
+	"github.com/syyzit/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/proxy"
+	"github.com/syyzit/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/replay"
+	"github.com/syyzit/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/ui"
 )
 
 const version = "0.1.0"
@@ -79,6 +78,8 @@ func run(args []string) int {
 		return cmdResolve(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
+	case "tools":
+		return cmdTools(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("blackbox", version)
 		return 0
@@ -159,6 +160,11 @@ Usage:
 
   blackbox http -upstream <url> [-addr 127.0.0.1:8787]
         Proxy a streamable-HTTP MCP server and record every request.
+
+  blackbox tools [-home dir]
+  blackbox tools accept [-home dir] [-server key] [tool...]
+        List tool definitions that changed since they were approved, or accept them.
+        A changed tool stays blocked (with rugPullBlock) until it is accepted.
 
   blackbox version
 
@@ -345,32 +351,7 @@ func loadPolicy(home, path string) (*policy.Policy, error) {
 }
 
 func timeoutApprover(timeout time.Duration) policy.Approver {
-	return policy.TimeoutApprover{Inner: terminalApprover{}, Timeout: timeout}
-}
-
-// terminalApprover asks on /dev/tty, never on the MCP stream, so the agent cannot
-// answer its own approval prompt.
-type terminalApprover struct{}
-
-func (terminalApprover) Approve(r policy.ApprovalRequest) bool {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "blackbox · %s needs approval but there is no terminal: denied\n", r.Tool)
-		return false
-	}
-	defer tty.Close()
-
-	args := r.Args
-	if len(args) > 240 {
-		args = args[:240] + "…"
-	}
-	fmt.Fprintf(tty, "\nblackbox · approval required\n  server  %s\n  tool    %s\n  args    %s\n  reason  %s\nallow? [y/N] ", r.Server, r.Tool, args, r.Reason)
-	line, err := bufio.NewReader(tty).ReadString('\n')
-	if err != nil {
-		return false
-	}
-	line = strings.ToLower(strings.TrimSpace(line))
-	return line == "y" || line == "yes"
+	return newTerminalApprover(timeout, openConsole)
 }
 
 func cmdExport(args []string) int {

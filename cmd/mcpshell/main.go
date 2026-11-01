@@ -6,9 +6,13 @@
 //
 // Security model:
 //   - no shell: arguments are passed literally, so pipes and redirection do nothing
-//   - an allowlist of programs, plus a read-only subcommand allowlist for git
-//   - every working directory must resolve inside the configured root
+//   - an allowlist of programs, plus read-only forms of a few git subcommands, with
+//     repository-configured diff drivers, textconv and fsmonitor switched off
+//   - the working directory and any path argument must resolve inside the root
+//   - find cannot run programs or delete files
 //   - a timeout and an output cap
+//
+// It is not a sandbox: go and make build and run code from the repository by design.
 package main
 
 import (
@@ -25,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
 )
 
 const version = "0.1.0"
@@ -131,7 +135,7 @@ func (s *server) respond(w io.Writer, msg *jsonrpc.Message) error {
 func runCommandTool() map[string]any {
 	return map[string]any{
 		"name":        "run_command",
-		"description": "Run an allowlisted command inside the repository. No shell: pipes and redirection are not interpreted. Use args for arguments.",
+		"description": "Run an allowlisted command inside the repository. No shell: pipes and redirection are not interpreted. Use args for arguments. Paths must stay inside the repository; git is limited to read-only use.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -183,15 +187,16 @@ func (s *server) execute(a callArgs) (string, bool) {
 	if !s.allow[a.Command] {
 		return fmt.Sprintf("command %q is not allowlisted (allowed: %s)", a.Command, strings.Join(keys(s.allow), ", ")), true
 	}
-	if a.Command == "git" {
-		if len(a.Args) == 0 || !gitSubcommands[a.Args[0]] {
-			return "git is limited to read-only subcommands", true
-		}
-	}
-
 	dir, err := s.resolve(a.Cwd)
 	if err != nil {
 		return err.Error(), true
+	}
+	if err := checkArgs(s.root, dir, a.Command, a.Args); err != nil {
+		return err.Error(), true
+	}
+	argv := a.Args
+	if a.Command == "git" {
+		argv = append(gitPrefix(a.Args[0]), a.Args[1:]...)
 	}
 
 	timeout := time.Duration(a.TimeoutMS) * time.Millisecond
@@ -205,7 +210,7 @@ func (s *server) execute(a callArgs) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.Command, a.Args...)
+	cmd := exec.CommandContext(ctx, a.Command, argv...)
 	cmd.Dir = dir
 	out, runErr := cmd.CombinedOutput()
 
@@ -236,7 +241,7 @@ func (s *server) execute(a callArgs) (string, bool) {
 func (s *server) resolve(cwd string) (string, error) {
 	dir := s.root
 	if cwd != "" {
-		if filepath.IsAbs(cwd) {
+		if looksAbsolute(cwd) {
 			dir = cwd
 		} else {
 			dir = filepath.Join(s.root, cwd)
@@ -246,7 +251,7 @@ func (s *server) resolve(cwd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if abs != s.root && !strings.HasPrefix(abs, s.root+string(filepath.Separator)) {
+	if !within(s.root, abs) {
 		return "", fmt.Errorf("cwd %q is outside the repo root", cwd)
 	}
 	return abs, nil

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
 )
 
 // Trace is one agent session merged across every recorder source.

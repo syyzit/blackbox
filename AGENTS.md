@@ -15,8 +15,10 @@ declares a server named `repo`; when it is present, its tools appear as `repo_*`
   program directly, with no shell: pass arguments in `args`, and do not expect pipes,
   redirection, or `&&` to work.
 - `shell_run_command` allows `go`, `git`, `make`, and a few read-only utilities. Git is
-  restricted to read-only subcommands; commits and pushes still need the normal shell
-  and are not recorded.
+  restricted to read-only forms (listing branches, tags and remotes, not changing them);
+  commits and pushes still need the normal shell and are not recorded. Path arguments
+  must stay inside the repository, and `find` cannot use `-exec` or `-delete`. This is a
+  guard rail, not a sandbox: `go` and `make` run code from the repository.
 - Both servers are proxy-wrapped, so file and command work appear in `blackbox sessions`.
   Each MCP connection is its own session, so the two servers produce separate sessions.
 

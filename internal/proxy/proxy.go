@@ -17,10 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
-	"github.com/spacecr8ed/blackbox/internal/policy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/redact"
 )
 
 // Ledger detects tool definitions that changed since they were last seen.
@@ -123,7 +123,12 @@ func RunStdio(ctx context.Context, o Options) error {
 	}()
 
 	// Wait for the server's stdout to close before cmd.Wait, per os/exec's contract.
-	<-s2cErr
+	// If the pump stopped because the agent went away (a write to it failed), nobody
+	// drains the server's stdout any more and it would block forever on a full pipe,
+	// so stop it instead of waiting for an exit that never comes.
+	if err := <-s2cErr; err != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 	waitErr := cmd.Wait()
 
 	// The c2s pump can still be blocked reading an interactive terminal. Only collect
@@ -146,6 +151,7 @@ type call struct {
 	callID     string
 	state      string
 	externalID string
+	session    string
 }
 
 type openCall struct {
@@ -227,16 +233,17 @@ func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error
 		line, readErr := br.ReadBytes('\n')
 		if len(line) > 0 {
 			if dir == event.ClientToServer {
-				msg, dec, blocked := p.gate(line)
+				resp, dec, blocked := p.gate(line)
 				if blocked {
 					p.record(dir, line, routeHint{}, dec, false)
-					resp := syntheticError(msg, dec.Reason)
-					if p.agentOut != nil {
-						if err := p.write(p.agentOut, append(resp, '\n')); err != nil {
-							return err
+					if len(resp) > 0 {
+						if p.agentOut != nil {
+							if err := p.write(p.agentOut, append(resp, '\n')); err != nil {
+								return err
+							}
 						}
+						p.record(event.ServerToClient, resp, routeHint{}, dec, true)
 					}
-					p.record(event.ServerToClient, resp, routeHint{}, dec, true)
 				} else {
 					// Record before forwarding so a decision that depends on this frame
 					// (a rug-pull discovered in tools/list) is visible to the next call.
@@ -271,13 +278,61 @@ func (p *pipeline) write(dst io.Writer, line []byte) error {
 }
 
 // gate evaluates policy for a client frame. A nil decision means "not evaluated".
-func (p *pipeline) gate(line []byte) (*jsonrpc.Message, *policy.Decision, bool) {
-	msg, err := jsonrpc.Decode(line)
-	if err != nil || msg.Method != "tools/call" || p.policy == nil {
-		return msg, nil, false
+// When the frame is blocked, resp is the synthetic reply for the agent (empty when
+// the blocked frame carried no request that expects one).
+func (p *pipeline) gate(line []byte) (resp []byte, dec *policy.Decision, blocked bool) {
+	if p.policy == nil {
+		return nil, nil, false
 	}
-	dec, blocked := p.evaluate(msg)
-	return msg, &dec, blocked
+	if batch, isBatch := jsonrpc.DecodeBatch(line); isBatch {
+		return p.gateBatch(batch)
+	}
+	msg, err := jsonrpc.Decode(line)
+	if err != nil || msg.Method != "tools/call" {
+		return nil, nil, false
+	}
+	d, blocked := p.evaluate(msg)
+	if !blocked {
+		return nil, &d, false
+	}
+	if len(msg.ID) == 0 {
+		return nil, &d, true // a notification gets no reply
+	}
+	return syntheticError(msg, d.Reason), &d, true
+}
+
+// gateBatch evaluates every tools/call in a JSON-RPC batch. Forwarding part of a
+// batch would change its bytes and its response shape, so one blocked call blocks
+// the whole batch, and every request in it gets an error so the agent is not left
+// waiting.
+func (p *pipeline) gateBatch(batch []*jsonrpc.Message) ([]byte, *policy.Decision, bool) {
+	var blockedBy *policy.Decision
+	for _, msg := range batch {
+		if msg.Method != "tools/call" {
+			continue
+		}
+		d, blocked := p.evaluate(msg)
+		if blocked {
+			blockedBy = &d
+			break
+		}
+	}
+	if blockedBy == nil {
+		return nil, nil, false
+	}
+
+	var replies []json.RawMessage
+	for _, msg := range batch {
+		if msg.Method == "" || len(msg.ID) == 0 {
+			continue // responses and notifications get no reply
+		}
+		replies = append(replies, syntheticError(msg, "batch contains a blocked call: "+blockedBy.Reason))
+	}
+	if len(replies) == 0 {
+		return nil, blockedBy, true
+	}
+	out, _ := json.Marshal(replies)
+	return out, blockedBy, true
 }
 
 func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
@@ -290,7 +345,7 @@ func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 			Action: policy.Deny,
 			Mode:   dec.Mode,
 			Rule:   -1,
-			Reason: "tool definition changed since it was last approved",
+			Reason: "tool definition changed since it was last approved (review it, then run `blackbox tools accept`)",
 		}
 	}
 
@@ -338,7 +393,7 @@ func auditArgs(red *redact.Redactor, args string) string {
 // callIDFor groups MRTR retries under the id of the initial request. The retry has a
 // different JSON-RPC id by spec, so the link is the echoed requestState (preferred) or
 // an open call to the same method and tool.
-func (p *pipeline) callIDFor(msg *jsonrpc.Message, method, tool, rpcID string) string {
+func (p *pipeline) callIDFor(msg *jsonrpc.Message, method, tool, rpcID, session string) string {
 	p.callMu.Lock()
 	defer p.callMu.Unlock()
 
@@ -348,12 +403,22 @@ func (p *pipeline) callIDFor(msg *jsonrpc.Message, method, tool, rpcID string) s
 		}
 	}
 	if msg.HasInputResponses() {
-		key := method + "\x00" + tool
+		key := session + "\x00" + method + "\x00" + tool
 		if open := p.openKeys[key]; len(open) > 0 {
 			return open[len(open)-1].callID
 		}
 	}
+	if session != "" {
+		return "call-" + rpcID + "@" + shortSession(session)
+	}
 	return "call-" + rpcID
+}
+
+// shortSession keeps call ids readable while separating HTTP sessions. It hashes the
+// whole id, since session ids often share a prefix.
+func shortSession(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:8]
 }
 
 // trackMRTR keeps the grouping state in sync with the last response of a call.
@@ -361,7 +426,7 @@ func (p *pipeline) trackMRTR(c call, resultType string, result json.RawMessage) 
 	p.callMu.Lock()
 	defer p.callMu.Unlock()
 
-	key := c.method + "\x00" + c.tool
+	key := c.session + "\x00" + c.method + "\x00" + c.tool
 	if resultType != "input_required" {
 		p.closeCallLocked(c, key)
 		return
@@ -393,10 +458,27 @@ func (p *pipeline) closeCallLocked(c call, key string) {
 	}
 }
 
+// PendingLedger is implemented by ledgers that remember unaccepted changes across
+// sessions. The proxy consults it so a changed tool is blocked from the first frame
+// of a session, not only after this session's tools/list response has been seen.
+type PendingLedger interface {
+	IsPending(server, tool string) bool
+}
+
 func (p *pipeline) isRugPulled(tool string) bool {
 	p.rugPulledMu.Lock()
-	defer p.rugPulledMu.Unlock()
-	return p.rugPulled[tool]
+	pulled := p.rugPulled[tool]
+	p.rugPulledMu.Unlock()
+	if pulled {
+		return true
+	}
+	if p.policy == nil || !p.policy.RugPullBlock {
+		return false
+	}
+	if pl, ok := p.ledger.(PendingLedger); ok && tool != "" {
+		return pl.IsPending(p.serverKey, tool)
+	}
+	return false
 }
 
 func (p *pipeline) setToolHash(tool, hash string) {
@@ -419,9 +501,25 @@ func (p *pipeline) markRugPulled(tool string) {
 
 // routeHint carries transport-level routing (Mcp-Method / Mcp-Name headers) that is
 // authoritative even when the body cannot be parsed.
+//
+// scope and session keep correlation apart when one pipeline serves many HTTP
+// clients: JSON-RPC ids are only unique per connection, so two agents that both send
+// id 1 must not match each other's responses. scope identifies the HTTP exchange that
+// carries a request and its response; session is the Mcp-Session-Id, which links a
+// server-initiated request to the client's reply on a later POST. Both are empty for
+// stdio, which is a single connection.
 type routeHint struct {
-	method string
-	name   string
+	method  string
+	name    string
+	scope   string
+	session string
+}
+
+func corrKey(scope, id string) string {
+	if scope == "" {
+		return id
+	}
+	return scope + "\x00" + id
 }
 
 // record indexes a copy of the frame. Errors are deliberately swallowed: a broken
@@ -476,16 +574,16 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			e.Status = event.StatusPending
 		}
 		e.Args = p.red.String(compact(msg.Params))
-		e.CallID = p.callIDFor(msg, e.Method, e.Tool, e.ID)
+		e.CallID = p.callIDFor(msg, e.Method, e.Tool, e.ID, hint.session)
 		if e.Method == "tools/call" && e.Tool != "" {
 			e.ToolHash = p.toolHash(e.Tool)
 		}
 
 		p.mu.Lock()
-		p.pending[e.ID] = call{
+		p.pending[corrKey(hint.scope, e.ID)] = call{
 			method: e.Method, tool: e.Tool, at: e.At,
 			callID: e.CallID, state: msg.RequestState(),
-			externalID: e.ExternalID,
+			externalID: e.ExternalID, session: hint.session,
 		}
 		p.mu.Unlock()
 
@@ -502,7 +600,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		e.Args = p.red.String(compact(msg.Params))
 
 		p.mu.Lock()
-		p.serverPending[e.ID] = call{method: e.Method, tool: e.Tool, at: e.At}
+		p.serverPending[corrKey(hint.session, e.ID)] = call{method: e.Method, tool: e.Tool, at: e.At, session: hint.session}
 		p.mu.Unlock()
 
 	case isNotification:
@@ -519,11 +617,13 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			ok bool
 		)
 		if dir == event.ServerToClient {
-			c, ok = p.pending[e.ID]
-			delete(p.pending, e.ID)
+			key := corrKey(hint.scope, e.ID)
+			c, ok = p.pending[key]
+			delete(p.pending, key)
 		} else {
-			c, ok = p.serverPending[e.ID]
-			delete(p.serverPending, e.ID)
+			key := corrKey(hint.session, e.ID)
+			c, ok = p.serverPending[key]
+			delete(p.serverPending, key)
 		}
 		p.mu.Unlock()
 		if ok {

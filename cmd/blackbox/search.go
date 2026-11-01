@@ -7,7 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 func cmdSearch(args []string) int {

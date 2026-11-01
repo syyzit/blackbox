@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/event"
 )
 
 // TestReplayAgentHelper acts as the agent when re-executed by ServeStdio.

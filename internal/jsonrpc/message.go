@@ -5,6 +5,7 @@
 package jsonrpc
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -40,6 +41,26 @@ func Decode(line []byte) (*Message, error) {
 		return nil, fmt.Errorf("decode json-rpc: %w", err)
 	}
 	return &m, nil
+}
+
+// DecodeBatch parses a JSON-RPC batch: a JSON array of messages. isBatch reports
+// whether the frame is an array at all; elements that are not message objects are
+// skipped, since a server must reject them anyway.
+func DecodeBatch(line []byte) (msgs []*Message, isBatch bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, false
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
+		return nil, true
+	}
+	for _, r := range raw {
+		if m, err := Decode(r); err == nil {
+			msgs = append(msgs, m)
+		}
+	}
+	return msgs, true
 }
 
 // IsRequest reports whether the frame is a request (has both method and id).

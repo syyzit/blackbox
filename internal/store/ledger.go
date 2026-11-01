@@ -4,67 +4,263 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
-// Ledger remembers the tool definitions seen for each server command, so a later
+// Ledger remembers the approved tool definitions for each server command, so a later
 // run can detect a definition that changed after it was approved.
+//
+// The first definition seen for a tool is trusted on first use. A later, different
+// definition is recorded as pending and keeps being reported as changed until a human
+// accepts it with Accept; it never silently replaces the approved one.
+//
+// Several Black Box processes can share one ledger file (one per wrapped server), so
+// every write merges with what is on disk instead of overwriting it.
 type Ledger struct {
 	mu   sync.Mutex
 	path string
 	data ledgerData
+	// cleared remembers pending entries this process resolved, so a merge with an
+	// older file on disk does not bring them back.
+	cleared map[string]string
 }
 
 type ledgerData struct {
+	// Servers maps server key -> tool -> approved hash.
 	Servers map[string]map[string]string `json:"servers"`
+	// Pending maps server key -> tool -> the changed hash awaiting approval.
+	Pending map[string]map[string]string `json:"pending,omitempty"`
+}
+
+// PendingChange is a tool whose definition changed and has not been accepted.
+type PendingChange struct {
+	Server   string
+	Tool     string
+	Approved string
+	Pending  string
 }
 
 // LoadLedger reads the ledger, tolerating a missing or corrupt file.
 func LoadLedger(path string) *Ledger {
-	l := &Ledger{path: path, data: ledgerData{Servers: map[string]map[string]string{}}}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return l
-	}
-	if err := json.Unmarshal(b, &l.data); err != nil || l.data.Servers == nil {
-		l.data.Servers = map[string]map[string]string{}
-	}
-	return l
+	return &Ledger{path: path, data: readLedger(path), cleared: map[string]string{}}
 }
 
-// Observe records a definition hash and reports whether it changed from the
-// previously recorded value. A first observation is never a change.
+func readLedger(path string) ledgerData {
+	d := ledgerData{}
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &d)
+	}
+	if d.Servers == nil {
+		d.Servers = map[string]map[string]string{}
+	}
+	if d.Pending == nil {
+		d.Pending = map[string]map[string]string{}
+	}
+	return d
+}
+
+// Observe reports whether a definition differs from the approved one. A first
+// observation is never a change; it becomes the approved definition and is persisted
+// immediately, so detection works across sessions even if the process is killed.
 func (l *Ledger) Observe(server, tool, hash string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.data.Servers[server] == nil {
-		l.data.Servers[server] = map[string]string{}
+	approved, seen := l.data.Servers[server][tool]
+	switch {
+	case !seen:
+		setNested(l.data.Servers, server, tool, hash)
+		deleteNested(l.data.Pending, server, tool)
+	case approved == hash:
+		pending, ok := l.data.Pending[server][tool]
+		if !ok {
+			return false
+		}
+		l.cleared[server+"\x00"+tool] = pending
+		deleteNested(l.data.Pending, server, tool)
+	default:
+		if l.data.Pending[server][tool] == hash {
+			return true
+		}
+		setNested(l.data.Pending, server, tool, hash)
 	}
-	prev, seen := l.data.Servers[server][tool]
-	l.data.Servers[server][tool] = hash
-	return seen && prev != hash
+	_ = l.saveLocked()
+	return seen && approved != hash
 }
 
-// Save flushes the ledger to disk.
-func (l *Ledger) Save() error {
+// Accept approves pending changes. An empty server matches every server, and no tools
+// means every pending tool of the matched servers. It returns what was accepted.
+func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+	// Start from the latest file so an accept never loses another process's writes.
+	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+
+	want := map[string]bool{}
+	for _, t := range tools {
+		want[t] = true
+	}
+	var accepted []PendingChange
+	for srv, pend := range l.data.Pending {
+		if server != "" && srv != server {
+			continue
+		}
+		for tool, hash := range pend {
+			if len(want) > 0 && !want[tool] {
+				continue
+			}
+			accepted = append(accepted, PendingChange{
+				Server: srv, Tool: tool, Approved: l.data.Servers[srv][tool], Pending: hash,
+			})
+			setNested(l.data.Servers, srv, tool, hash)
+			deleteNested(l.data.Pending, srv, tool)
+		}
+	}
+	sortChanges(accepted)
+	if len(accepted) == 0 {
+		return nil, nil
+	}
+	if err := l.writeLocked(); err != nil {
+		return nil, err
+	}
+	return accepted, nil
+}
+
+// PendingChanges lists definitions that changed and await approval.
+func (l *Ledger) PendingChanges() []PendingChange {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var out []PendingChange
+	for srv, pend := range l.data.Pending {
+		for tool, hash := range pend {
+			out = append(out, PendingChange{
+				Server: srv, Tool: tool, Approved: l.data.Servers[srv][tool], Pending: hash,
+			})
+		}
+	}
+	sortChanges(out)
+	return out
+}
+
+// Save flushes the ledger to disk, merged with any concurrent writer's changes.
+func (l *Ledger) Save() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.saveLocked()
+}
+
+// IsPending reports whether a tool has a changed definition awaiting approval.
+func (l *Ledger) IsPending(server, tool string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, ok := l.data.Pending[server][tool]
+	return ok
+}
+
+// Known returns the approved hash for a tool, if any.
+func (l *Ledger) Known(server, tool string) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	h, ok := l.data.Servers[server][tool]
+	return h, ok
+}
+
+func (l *Ledger) saveLocked() error {
+	if l.path == "" {
+		return nil
+	}
+	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	return l.writeLocked()
+}
+
+// writeLocked replaces the file atomically, so a crash or a concurrent reader never
+// sees a half-written ledger.
+func (l *Ledger) writeLocked() error {
+	if l.path == "" {
+		return nil
+	}
+	dir := filepath.Dir(l.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(l.data, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(l.path, append(b, '\n'), 0o644)
+	tmp, err := os.CreateTemp(dir, ".tooldefs-*.json")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), l.path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }
 
-// Known returns the stored hash for a tool, if any.
-func (l *Ledger) Known(server, tool string) (string, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	h, ok := l.data.Servers[server][tool]
-	return h, ok
+// mergeLedger combines the file on disk with this process's view. Approved hashes on
+// disk win, because they only change through Accept; entries this process saw first
+// are added. A pending change is dropped once its hash has been approved, or when this
+// process saw the server revert to the approved definition.
+func mergeLedger(disk, mem ledgerData, cleared map[string]string) ledgerData {
+	for srv, tools := range mem.Servers {
+		for tool, hash := range tools {
+			if _, ok := disk.Servers[srv][tool]; !ok {
+				setNested(disk.Servers, srv, tool, hash)
+			}
+		}
+	}
+	for srv, tools := range mem.Pending {
+		for tool, hash := range tools {
+			if _, ok := disk.Pending[srv][tool]; !ok {
+				setNested(disk.Pending, srv, tool, hash)
+			}
+		}
+	}
+	for srv, tools := range disk.Pending {
+		for tool, hash := range tools {
+			if disk.Servers[srv][tool] == hash || cleared[srv+"\x00"+tool] == hash {
+				deleteNested(disk.Pending, srv, tool)
+			}
+		}
+	}
+	return disk
+}
+
+func setNested(m map[string]map[string]string, a, b, v string) {
+	if m[a] == nil {
+		m[a] = map[string]string{}
+	}
+	m[a][b] = v
+}
+
+func deleteNested(m map[string]map[string]string, a, b string) {
+	if m[a] == nil {
+		return
+	}
+	delete(m[a], b)
+	if len(m[a]) == 0 {
+		delete(m, a)
+	}
+}
+
+func sortChanges(c []PendingChange) {
+	sort.Slice(c, func(i, j int) bool {
+		if c[i].Server != c[j].Server {
+			return c[i].Server < c[j].Server
+		}
+		return c[i].Tool < c[j].Tool
+	})
 }

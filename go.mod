@@ -1,4 +1,4 @@
-module github.com/spacecr8ed/blackbox
+module github.com/syyzit/blackbox
 
 go 1.26.0
 

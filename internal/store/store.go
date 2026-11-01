@@ -20,8 +20,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
 )
 
 // Meta describes a recorded session.
@@ -94,8 +94,13 @@ func Open(home string, argv []string) (*Session, error) {
 		Meta:   meta,
 		Home:   home,
 		db:     db,
-		ledger: LoadLedger(filepath.Join(home, "tooldefs.json")),
+		ledger: LoadLedger(LedgerPath(home)),
 	}, nil
+}
+
+// LedgerPath is where the tool-definition ledger for a home lives.
+func LedgerPath(home string) string {
+	return filepath.Join(Home(home), "tooldefs.json")
 }
 
 // Emit persists one event, assigning sequence and session id.

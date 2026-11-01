@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/spacecr8ed/blackbox/internal/mcpconfig"
+	"github.com/syyzit/blackbox/internal/mcpconfig"
 )
 
 // cmdInit discovers agent MCP configs and routes selected servers through Black Box.

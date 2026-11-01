@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
-	"github.com/spacecr8ed/blackbox/internal/policy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/localhost"
+	"github.com/syyzit/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/redact"
 )
 
 // HTTPOptions configures a streamable-HTTP MCP proxy.
@@ -52,9 +54,10 @@ type HTTPOptions struct {
 // It uses the 2026-07-28 header routing fields (Mcp-Method / Mcp-Name) when present
 // and falls back to parsing the JSON-RPC body, so it works with older clients too.
 type HTTP struct {
-	upstream *url.URL
-	client   *http.Client
-	rec      *pipeline
+	upstream  *url.URL
+	client    *http.Client
+	rec       *pipeline
+	exchanges atomic.Uint64 // numbers each request/response exchange for correlation
 }
 
 // NewHTTP builds an HTTP proxy.
@@ -103,24 +106,36 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = r.Body.Close()
 	body = bytes.TrimSpace(body)
 
-	method, name := routeFields(r.Header, body)
+	// The routing headers are recorded as authoritative and forwarded upstream, while
+	// policy reads the body. If they disagree, the recording would name one tool while
+	// another one runs, so refuse the request instead of guessing which is true.
+	if reason := routeMismatch(r.Header, body); reason != "" {
+		http.Error(w, "blackbox: "+reason, http.StatusBadRequest)
+		return
+	}
 
-	var dec *policy.Decision
-	if msg, err := jsonrpc.Decode(body); err == nil && msg.Method == "tools/call" && h.rec.policy != nil {
-		d, blocked := h.rec.evaluate(msg)
-		dec = &d
-		if blocked {
-			h.rec.record(event.ClientToServer, body, routeHint{method: method, name: name}, dec, false)
-			resp := syntheticError(msg, d.Reason)
-			h.rec.record(event.ServerToClient, resp, routeHint{}, dec, true)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write(resp)
-			return
+	method, name := routeFields(r.Header, body)
+	hint := routeHint{
+		method:  method,
+		name:    name,
+		scope:   fmt.Sprintf("req-%d", h.exchanges.Add(1)),
+		session: r.Header.Get("Mcp-Session-Id"),
+	}
+	respHint := routeHint{scope: hint.scope, session: hint.session}
+
+	reply, dec, blocked := h.rec.gate(body)
+	if blocked {
+		h.rec.record(event.ClientToServer, body, hint, dec, false)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if len(reply) > 0 {
+			h.rec.record(event.ServerToClient, reply, respHint, dec, true)
+			_, _ = w.Write(reply)
 		}
+		return
 	}
 	if len(body) > 0 {
-		h.rec.record(event.ClientToServer, body, routeHint{method: method, name: name}, dec, false)
+		h.rec.record(event.ClientToServer, body, hint, dec, false)
 	}
 
 	target := *h.upstream
@@ -152,8 +167,16 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Del("Content-Length") // the body may be redacted/re-encoded downstream
 	w.WriteHeader(resp.StatusCode)
 
+	// A server that assigns a session on initialize names it in the response; replies
+	// to server requests later in this exchange belong to that session.
+	if respHint.session == "" {
+		respHint.session = resp.Header.Get("Mcp-Session-Id")
+	}
+
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		h.streamSSE(w, resp.Body, name)
+		sseHint := respHint
+		sseHint.name = name
+		h.streamSSE(w, resp.Body, sseHint)
 		return
 	}
 
@@ -161,13 +184,34 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	h.rec.record(event.ServerToClient, bytes.TrimSpace(respBody), routeHint{}, nil, false)
+	if trimmed := bytes.TrimSpace(respBody); len(trimmed) > 0 {
+		h.rec.record(event.ServerToClient, trimmed, respHint, nil, false)
+	}
 	_, _ = w.Write(respBody)
 }
 
-func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader, name string) {
+// streamSSE forwards an event stream unchanged and records the JSON payload of each
+// event, not the SSE envelope, so streamed frames are queryable like any other frame.
+//
+// Per the SSE format an event ends at a blank line and may span several data: lines,
+// which are joined with newlines; event:, id:, retry: and comment lines carry no
+// payload. The hint's fallback name attributes a notification to its subscription.
+func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader, hint routeHint) {
 	flusher, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(body, 64*1024)
+
+	var data [][]byte
+	dispatch := func() {
+		if len(data) == 0 {
+			return
+		}
+		payload := bytes.TrimSpace(bytes.Join(data, []byte("\n")))
+		data = data[:0]
+		if len(payload) > 0 && !bytes.Equal(payload, []byte("[DONE]")) {
+			h.rec.record(event.ServerToClient, payload, hint, nil, false)
+		}
+	}
+
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
@@ -176,21 +220,47 @@ func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader, name string) {
 				flusher.Flush()
 			}
 
-			// Record the JSON payload, not the SSE envelope, so streamed frames are
-			// queryable like any other frame. The fallback name attributes a
-			// notification to the subscription it belongs to.
-			payload := bytes.TrimSpace(line)
-			if bytes.HasPrefix(payload, []byte("data:")) {
-				payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
-			}
-			if len(payload) > 0 && !bytes.Equal(payload, []byte("[DONE]")) {
-				h.rec.record(event.ServerToClient, payload, routeHint{name: name}, nil, false)
+			field := bytes.TrimRight(line, "\r\n")
+			switch {
+			case len(field) == 0:
+				dispatch()
+			case bytes.HasPrefix(field, []byte("data:")):
+				v := bytes.TrimPrefix(field, []byte("data:"))
+				v = bytes.TrimPrefix(v, []byte(" ")) // the format strips one leading space
+				data = append(data, append([]byte(nil), v...))
+			case bytes.Equal(field, []byte("data")):
+				data = append(data, nil)
 			}
 		}
 		if err != nil {
+			dispatch() // a stream that ends without a final blank line
 			return
 		}
 	}
+}
+
+// routeMismatch reports when the Mcp-Method / Mcp-Name headers name a different
+// method or tool than the JSON-RPC body. A body that cannot be parsed as a single
+// message is left to the upstream server.
+func routeMismatch(hdr http.Header, body []byte) string {
+	hMethod, hName := hdr.Get("Mcp-Method"), hdr.Get("Mcp-Name")
+	if hMethod == "" && hName == "" {
+		return ""
+	}
+	msg, err := jsonrpc.Decode(body)
+	if err != nil || msg.Method == "" {
+		if _, isBatch := jsonrpc.DecodeBatch(body); isBatch {
+			return "Mcp-Method/Mcp-Name headers cannot describe a batch"
+		}
+		return ""
+	}
+	if hMethod != "" && hMethod != msg.Method {
+		return fmt.Sprintf("Mcp-Method header %q does not match body method %q", hMethod, msg.Method)
+	}
+	if hName != "" && msg.Method == "tools/call" && hName != msg.ToolName() {
+		return fmt.Sprintf("Mcp-Name header %q does not match body tool %q", hName, msg.ToolName())
+	}
+	return ""
 }
 
 // routeFields resolves Mcp-Method and Mcp-Name, preferring headers.
@@ -220,8 +290,10 @@ func RunHTTP(ctx context.Context, addr string, o HTTPOptions) error {
 		return err
 	}
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           h,
+		Addr: addr,
+		// Without this, a web page could rebind its domain to 127.0.0.1 and call
+		// tools through the proxy as if it were the agent.
+		Handler:           localhost.Guard(h),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

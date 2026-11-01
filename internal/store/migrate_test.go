@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/event"
 )
 
 // A database created by an older build must keep working after upgrade.

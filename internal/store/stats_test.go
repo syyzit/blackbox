@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/event"
 )
 
 func TestEventsPersistAndAggregate(t *testing.T) {

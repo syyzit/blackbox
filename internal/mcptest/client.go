@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
 )
 
 // RequestHandler answers server-initiated requests in tests.

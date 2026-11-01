@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/coverage"
 )
 
 // SaveCoverage records the coverage report for this session.

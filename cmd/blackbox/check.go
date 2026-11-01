@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/policy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 type checkPayload struct {

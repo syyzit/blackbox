@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/event"
 )
 
 func writeFile(t *testing.T, path, body string) {

@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/event"
 )
 
 const (

@@ -12,7 +12,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spacecr8ed/blackbox/internal/mcptest"
+	"github.com/syyzit/blackbox/internal/mcptest"
 )
 
 type nopCloser struct{ io.Writer }

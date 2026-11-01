@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
-	"github.com/spacecr8ed/blackbox/internal/proxy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
-	"github.com/spacecr8ed/blackbox/internal/store"
-	"github.com/spacecr8ed/blackbox/internal/ui"
+	"github.com/syyzit/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/proxy"
+	"github.com/syyzit/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/ui"
 )
 
 // cmdDev runs an MCP server and serves the UI for it in one command.

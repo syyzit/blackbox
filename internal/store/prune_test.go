@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
 )
 
 func makeSession(t *testing.T, home, label string, size int, at time.Time) string {

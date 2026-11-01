@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 // cmdResolve records the user's answer to a built-in require_approval decision.

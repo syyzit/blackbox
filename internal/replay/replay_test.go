@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/jsonrpc"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
 )
 
 func ev(dir event.Direction, method, tool, args, result string, seq int64) event.Event {

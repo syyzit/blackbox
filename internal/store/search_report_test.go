@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
 )
 
 func TestSearchAcrossSessions(t *testing.T) {

@@ -70,14 +70,15 @@ var defaultRules = []Rule{
 		Replace: "[REDACTED:private-key]",
 	},
 	{
-		Name:    "openai-key",
-		Re:      regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
-		Replace: "[REDACTED:openai-key]",
-	},
-	{
+		// Before openai-key, whose sk- prefix also matches sk-ant- keys.
 		Name:    "anthropic-key",
 		Re:      regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{16,}`),
 		Replace: "[REDACTED:anthropic-key]",
+	},
+	{
+		Name:    "openai-key",
+		Re:      regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
+		Replace: "[REDACTED:openai-key]",
 	},
 	{
 		Name:    "github-token",

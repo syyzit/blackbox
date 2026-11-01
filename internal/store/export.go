@@ -3,9 +3,9 @@ package store
 import (
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
 )
 
 // ExportFormat identifies the bundle schema.

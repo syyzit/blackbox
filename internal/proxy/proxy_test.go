@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/mcptest"
-	"github.com/spacecr8ed/blackbox/internal/proxy"
-	"github.com/spacecr8ed/blackbox/internal/redact"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/mcptest"
+	"github.com/syyzit/blackbox/internal/proxy"
+	"github.com/syyzit/blackbox/internal/redact"
 )
 
 // TestHelperProcess doubles as the MCP server when re-executed by the test binary.

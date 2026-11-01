@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/policy"
+	"github.com/syyzit/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/policy"
 )
 
 func TestAppendExternalContinuesSequence(t *testing.T) {

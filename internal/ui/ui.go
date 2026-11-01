@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/replay"
-	"github.com/spacecr8ed/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/localhost"
+	"github.com/syyzit/blackbox/internal/replay"
+	"github.com/syyzit/blackbox/internal/store"
 )
 
 //go:embed static
@@ -268,7 +269,7 @@ func Serve(ctx context.Context, home, addr string) error {
 // port before starting (and report the real address to the user).
 func ServeListener(ctx context.Context, home string, ln net.Listener) error {
 	srv := &http.Server{
-		Handler:           New(home).Handler(),
+		Handler:           localhost.Guard(New(home).Handler()), // DNS rebinding protection
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

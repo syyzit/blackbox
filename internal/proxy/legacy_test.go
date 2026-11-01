@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spacecr8ed/blackbox/internal/event"
-	"github.com/spacecr8ed/blackbox/internal/proxy"
+	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/proxy"
 )
 
 // Legacy MCP servers can ask the client for roots/sampling/elicitation. The recorder

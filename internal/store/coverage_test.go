@@ -3,7 +3,7 @@ package store
 import (
 	"testing"
 
-	"github.com/spacecr8ed/blackbox/internal/coverage"
+	"github.com/syyzit/blackbox/internal/coverage"
 )
 
 func TestCoverageRoundTrip(t *testing.T) {
