@@ -26,8 +26,6 @@ import (
 	"github.com/syyzit/blackbox/internal/ui"
 )
 
-const version = "0.1.0"
-
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
@@ -81,7 +79,7 @@ func run(args []string) int {
 	case "tools":
 		return cmdTools(args[1:])
 	case "version", "--version", "-v":
-		fmt.Println("blackbox", version)
+		fmt.Println("blackbox", versionString())
 		return 0
 	case "help", "-h", "--help":
 		usage()
@@ -178,7 +176,7 @@ Flags for run:
 Examples:
   blackbox run -- npx -y @modelcontextprotocol/server-filesystem ~/notes
   blackbox run -- ./bin/fakeserver
-`, version)
+`, versionString())
 }
 
 func cmdRun(args []string) int {

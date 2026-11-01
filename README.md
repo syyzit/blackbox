@@ -51,14 +51,22 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 
 ## Install
 
+Download a prebuilt binary for Windows, macOS or Linux (amd64 or arm64) from the
+[releases page](https://github.com/syyzit/blackbox/releases), unpack it, and put
+`blackbox` (or `blackbox.exe`) on your `PATH`. Check the download against
+`checksums.txt` from the same release.
+
+With Go 1.26+ you can also install or build from source:
+
 ```sh
+go install github.com/syyzit/blackbox/cmd/blackbox@latest
+# or, from a checkout
 ./scripts/install.sh              # builds and installs to ~/.local/bin
-# or
 make build                        # bin/blackbox and demo binaries
 ./scripts/demo.sh                 # record -> replay -> diff -> gate, end to end
 ```
 
-Requires Go 1.26+.
+`blackbox version` prints the release version, or the commit a source build came from.
 
 ## Wire it into an agent
 
@@ -370,6 +378,12 @@ make demo    # the full tour against the bundled server
 ```
 
 CI runs `go vet` and `go test -race` on every push.
+
+To release, tag and push: `git tag v0.2.0 && git push origin v0.2.0`. The release
+workflow runs GoReleaser, which builds every platform with the tag as the version and
+creates a draft release with the archives and checksums. Review the notes, then
+publish it. `goreleaser release --snapshot --clean` builds the same archives locally
+into `dist/`.
 
 ## Limitations
 
