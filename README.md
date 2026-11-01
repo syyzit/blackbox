@@ -195,11 +195,27 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
   "rugPullBlock": true,
   "rules": [
     {"server": "*filesystem*", "tool": "write_*", "action": "require_approval"},
-    {"tool": "*", "args": "\"path\"\\s*:\\s*\"/etc/", "action": "deny", "reason": "system path"},
+    {"tool": "*", "paths": {"path": "/etc/*"}, "action": "deny", "reason": "system path"},
+    {"tool": "run_command", "match": {"command": "git", "args.0": "push"}, "action": "require_approval"},
     {"tool": "shell", "action": "deny"}
   ]
 }
 ```
+
+A rule matches when all of its conditions hold:
+
+- `server` and `tool` are globs (`*`, `?`) over the server command and the tool name.
+- `match` maps a path into the tool's arguments to a glob over its value. Paths are
+  dotted (`options.mode`, `args.0`), and `*` stands for any element or key, matching
+  if any value it reaches matches. Numbers and booleans compare as written.
+- `paths` works like `match` for file paths: backslashes become `/` and the path is
+  cleaned first, so `/tmp/../etc/passwd` is checked as `/etc/passwd`. Matching is
+  case-sensitive, so on Windows write the casing the agent uses.
+- `args` is a regex over the whole JSON `params`. It's useful for one-off patterns,
+  but `match` and `paths` are harder to get wrong.
+
+The same rules apply to MCP calls (the paths start inside `arguments`) and to built-in
+tools checked through `blackbox check` (the paths start inside the tool's input).
 
 - `mode: "shadow"` records what would have happened and lets everything through.
   Switch to `"enforce"` when the rules look right in `blackbox decisions` and `report`.
@@ -258,6 +274,32 @@ audit row ends up `approved=true` (or a rejection note) instead of staying pendi
   { "action": "blackbox", "resource": "*", "effect": "ask" }
 ]
 ```
+
+## Redaction
+
+Secrets are removed from recordings, audit entries and exports before anything is
+written. The live stream between agent and server is never changed. Built-in rules
+cover:
+
+- private keys
+- Anthropic, OpenAI, GitHub (classic and fine-grained), GitLab, AWS, Google, Stripe,
+  Slack, npm and Hugging Face tokens
+- bearer tokens and JWTs
+- passwords in URLs (`postgres://app:[REDACTED:password]@db/prod`)
+- values assigned to keys like `password`, `token`, `secret`, `api_key` or
+  `private_key`
+
+Add your own formats in `~/.blackbox/redact.json`. They run before the built-in rules:
+
+```json
+{"rules": [
+  {"name": "internal-token", "pattern": "itk_[A-Za-z0-9]{32}"},
+  {"name": "customer-id", "pattern": "(cust_)[0-9]{8}", "replace": "${1}[REDACTED]"}
+]}
+```
+
+`replace` defaults to `[REDACTED:<name>]`. An invalid file stops the recorder with an
+error rather than recording without the rules you asked for.
 
 ## Ask questions across sessions
 

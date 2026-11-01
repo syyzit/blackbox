@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/syyzit/blackbox/internal/policy"
-	"github.com/syyzit/blackbox/internal/redact"
 	"github.com/syyzit/blackbox/internal/store"
 )
 
@@ -48,15 +47,15 @@ func cmdCheck(args []string) int {
 		return 1
 	}
 
-	pol, err := loadPolicy(*home, *policyPath)
+	pol, red, err := loadConfig(*home, *policyPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
 	}
 	rawArgs := compactJSON(p.Input)
-	dec := pol.Decide(policy.Request{Server: "opencode", Tool: p.Tool, Args: rawArgs})
+	dec := pol.Decide(policy.Request{Server: "opencode", Tool: p.Tool, Args: rawArgs, Arguments: p.Input})
 
-	auditText := redact.Default().String(rawArgs)
+	auditText := red.String(rawArgs)
 	if len(auditText) > 4096 {
 		auditText = auditText[:4096] + "…"
 	}
