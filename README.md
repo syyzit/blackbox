@@ -209,7 +209,7 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
   Windows); a timeout (`-approval-timeout`, default 1m) or a non-interactive session
   denies.
 - `args` regexes match the JSON-decoded, compactly re-encoded `params`, so escapes such as
-  ` ` or `\/` cannot hide a match. Write them against the compact form, for example
+  `\u0020` or `\/` cannot hide a match. Write them against the compact form, for example
   `"command":"rm -rf`.
 - A batch (a JSON array of calls) is blocked as a whole if any call in it is denied.
 - The first definition seen for each tool is trusted and stored in

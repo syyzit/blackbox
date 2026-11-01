@@ -67,11 +67,11 @@ func TestArgsRegexSeesThroughJSONEscapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range []string{
-		`{"name":"shell","arguments":{"command":"rm -rf /"}}`,
-		`{"name":"shell","arguments":{"command":"rm -rf /"}}`,
+		`{"name":"shell","arguments":{"command":"rm\u0020-rf /"}}`,
+		`{"name":"shell","arguments":{"command":"\u0072m -rf /"}}`,
 		`{"name":"read","arguments":{"path" : "\/etc\/passwd"}}`,
-		`{"name":"read","arguments":{"path":"/etc/shadow"}}`,
-		`{"name":"write","arguments":{"text":"<script>"}}`,
+		`{"name":"read","arguments":{"path":"\u002fetc/shadow"}}`,
+		`{"name":"write","arguments":{"text":"\u003cscript>"}}`,
 	} {
 		if got := p.Decide(Request{Tool: "x", Args: args}); got.Action != Deny {
 			t.Errorf("escaped args slipped past the rule: %s -> %s", args, got.Action)
