@@ -24,6 +24,8 @@ type Ledger struct {
 	// cleared remembers pending entries this process resolved, so a merge with an
 	// older file on disk does not bring them back.
 	cleared map[string]string
+	// dirty is set when a definition was remembered that is not on disk yet.
+	dirty bool
 }
 
 type ledgerData struct {
@@ -31,6 +33,10 @@ type ledgerData struct {
 	Servers map[string]map[string]string `json:"servers"`
 	// Pending maps server key -> tool -> the changed hash awaiting approval.
 	Pending map[string]map[string]string `json:"pending,omitempty"`
+	// Definitions maps hash -> the canonical definition it was computed from, so a
+	// human can see what changed before accepting it. Only hashes still referenced
+	// by Servers or Pending are kept.
+	Definitions map[string]json.RawMessage `json:"definitions,omitempty"`
 }
 
 // PendingChange is a tool whose definition changed and has not been accepted.
@@ -39,6 +45,10 @@ type PendingChange struct {
 	Tool     string
 	Approved string
 	Pending  string
+	// ApprovedDef and PendingDef are the canonical definitions, when recorded.
+	// Ledgers written before definitions were kept only have hashes.
+	ApprovedDef json.RawMessage
+	PendingDef  json.RawMessage
 }
 
 // LoadLedger reads the ledger, tolerating a missing or corrupt file.
@@ -57,7 +67,22 @@ func readLedger(path string) ledgerData {
 	if d.Pending == nil {
 		d.Pending = map[string]map[string]string{}
 	}
+	if d.Definitions == nil {
+		d.Definitions = map[string]json.RawMessage{}
+	}
 	return d
+}
+
+// RememberDefinition keeps the canonical definition behind a hash. It is written with
+// the next save, which Observe performs for the same tools/list.
+func (l *Ledger) RememberDefinition(hash string, def []byte) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.data.Definitions[hash]; ok || len(def) == 0 {
+		return
+	}
+	l.data.Definitions[hash] = append(json.RawMessage(nil), def...)
+	l.dirty = true
 }
 
 // Observe reports whether a definition differs from the approved one. A first
@@ -75,12 +100,18 @@ func (l *Ledger) Observe(server, tool, hash string) bool {
 	case approved == hash:
 		pending, ok := l.data.Pending[server][tool]
 		if !ok {
+			if l.dirty {
+				_ = l.saveLocked()
+			}
 			return false
 		}
 		l.cleared[server+"\x00"+tool] = pending
 		deleteNested(l.data.Pending, server, tool)
 	default:
 		if l.data.Pending[server][tool] == hash {
+			if l.dirty {
+				_ = l.saveLocked()
+			}
 			return true
 		}
 		setNested(l.data.Pending, server, tool, hash)
@@ -111,9 +142,7 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 			if len(want) > 0 && !want[tool] {
 				continue
 			}
-			accepted = append(accepted, PendingChange{
-				Server: srv, Tool: tool, Approved: l.data.Servers[srv][tool], Pending: hash,
-			})
+			accepted = append(accepted, l.changeLocked(srv, tool, hash))
 			setNested(l.data.Servers, srv, tool, hash)
 			deleteNested(l.data.Pending, srv, tool)
 		}
@@ -136,9 +165,7 @@ func (l *Ledger) PendingChanges() []PendingChange {
 	var out []PendingChange
 	for srv, pend := range l.data.Pending {
 		for tool, hash := range pend {
-			out = append(out, PendingChange{
-				Server: srv, Tool: tool, Approved: l.data.Servers[srv][tool], Pending: hash,
-			})
+			out = append(out, l.changeLocked(srv, tool, hash))
 		}
 	}
 	sortChanges(out)
@@ -160,6 +187,15 @@ func (l *Ledger) IsPending(server, tool string) bool {
 	return ok
 }
 
+func (l *Ledger) changeLocked(server, tool, pending string) PendingChange {
+	approved := l.data.Servers[server][tool]
+	return PendingChange{
+		Server: server, Tool: tool, Approved: approved, Pending: pending,
+		ApprovedDef: l.data.Definitions[approved],
+		PendingDef:  l.data.Definitions[pending],
+	}
+}
+
 // Known returns the approved hash for a tool, if any.
 func (l *Ledger) Known(server, tool string) (string, bool) {
 	l.mu.Lock()
@@ -173,7 +209,11 @@ func (l *Ledger) saveLocked() error {
 		return nil
 	}
 	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
-	return l.writeLocked()
+	if err := l.writeLocked(); err != nil {
+		return err
+	}
+	l.dirty = false
+	return nil
 }
 
 // writeLocked replaces the file atomically, so a crash or a concurrent reader never
@@ -183,9 +223,10 @@ func (l *Ledger) writeLocked() error {
 		return nil
 	}
 	dir := filepath.Dir(l.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	pruneDefinitions(&l.data)
 	b, err := json.MarshalIndent(l.data, "", "  ")
 	if err != nil {
 		return err
@@ -236,7 +277,30 @@ func mergeLedger(disk, mem ledgerData, cleared map[string]string) ledgerData {
 			}
 		}
 	}
+	for hash, def := range mem.Definitions {
+		if _, ok := disk.Definitions[hash]; !ok {
+			disk.Definitions[hash] = def
+		}
+	}
 	return disk
+}
+
+// pruneDefinitions drops definitions no approved or pending hash refers to, so the
+// file does not grow with every version a server has ever advertised.
+func pruneDefinitions(d *ledgerData) {
+	used := map[string]bool{}
+	for _, m := range []map[string]map[string]string{d.Servers, d.Pending} {
+		for _, tools := range m {
+			for _, hash := range tools {
+				used[hash] = true
+			}
+		}
+	}
+	for hash := range d.Definitions {
+		if !used[hash] {
+			delete(d.Definitions, hash)
+		}
+	}
 }
 
 func setNested(m map[string]map[string]string, a, b, v string) {

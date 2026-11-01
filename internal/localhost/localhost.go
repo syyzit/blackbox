@@ -19,7 +19,12 @@ import (
 // rebinding attack always arrives with a domain name.
 func AllowedHost(host string) bool {
 	h := host
-	if hh, _, err := net.SplitHostPort(host); err == nil {
+	if hh, port, err := net.SplitHostPort(host); err == nil {
+		// SplitHostPort accepts any port text, so "127.0.0.1:80.evil.example"
+		// would otherwise pass as 127.0.0.1.
+		if !digits(port) {
+			return false
+		}
 		h = hh
 	}
 	h = strings.TrimSuffix(strings.Trim(h, "[]"), ".")
@@ -31,6 +36,18 @@ func AllowedHost(host string) bool {
 	}
 	h = strings.ToLower(h)
 	return h == "localhost" || strings.HasSuffix(h, ".localhost")
+}
+
+func digits(s string) bool {
+	if s == "" || len(s) > 5 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Guard rejects requests whose Host header is not a local name.

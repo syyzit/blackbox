@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -188,55 +187,6 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.rec.record(event.ServerToClient, trimmed, respHint, nil, false)
 	}
 	_, _ = w.Write(respBody)
-}
-
-// streamSSE forwards an event stream unchanged and records the JSON payload of each
-// event, not the SSE envelope, so streamed frames are queryable like any other frame.
-//
-// Per the SSE format an event ends at a blank line and may span several data: lines,
-// which are joined with newlines; event:, id:, retry: and comment lines carry no
-// payload. The hint's fallback name attributes a notification to its subscription.
-func (h *HTTP) streamSSE(w http.ResponseWriter, body io.Reader, hint routeHint) {
-	flusher, _ := w.(http.Flusher)
-	br := bufio.NewReaderSize(body, 64*1024)
-
-	var data [][]byte
-	dispatch := func() {
-		if len(data) == 0 {
-			return
-		}
-		payload := bytes.TrimSpace(bytes.Join(data, []byte("\n")))
-		data = data[:0]
-		if len(payload) > 0 && !bytes.Equal(payload, []byte("[DONE]")) {
-			h.rec.record(event.ServerToClient, payload, hint, nil, false)
-		}
-	}
-
-	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			_, _ = w.Write(line)
-			if flusher != nil {
-				flusher.Flush()
-			}
-
-			field := bytes.TrimRight(line, "\r\n")
-			switch {
-			case len(field) == 0:
-				dispatch()
-			case bytes.HasPrefix(field, []byte("data:")):
-				v := bytes.TrimPrefix(field, []byte("data:"))
-				v = bytes.TrimPrefix(v, []byte(" ")) // the format strips one leading space
-				data = append(data, append([]byte(nil), v...))
-			case bytes.Equal(field, []byte("data")):
-				data = append(data, nil)
-			}
-		}
-		if err != nil {
-			dispatch() // a stream that ends without a final blank line
-			return
-		}
-	}
 }
 
 // routeMismatch reports when the Mcp-Method / Mcp-Name headers name a different

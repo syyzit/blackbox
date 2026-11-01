@@ -65,7 +65,7 @@ func Home(override string) string {
 // Open starts a new session under home.
 func Open(home string, argv []string) (*Session, error) {
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, fmt.Errorf("store: create home: %w", err)
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))
@@ -462,7 +462,7 @@ func ServerKey(argv []string) string {
 
 func openHomeDB(home string) (*sql.DB, error) {
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, err
 	}
 	return openDB(filepath.Join(home, "blackbox.db"))
@@ -471,6 +471,9 @@ func openHomeDB(home string) (*sql.DB, error) {
 func openDB(path string) (*sql.DB, error) {
 	// Per-connection pragmas must travel in the DSN: the pool creates connections
 	// lazily, and a PRAGMA executed once only applies to that one connection.
+	if err := createPrivate(path); err != nil {
+		return nil, fmt.Errorf("store: create db: %w", err)
+	}
 	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -494,6 +497,7 @@ func openDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	restrictDB(path)
 	return db, nil
 }
 

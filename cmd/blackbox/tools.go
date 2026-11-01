@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/syyzit/blackbox/internal/store"
+	"github.com/syyzit/blackbox/internal/textdiff"
 )
 
 // cmdTools lists tool definitions that changed since they were approved, and accepts
@@ -44,7 +46,11 @@ func cmdTools(args []string) int {
 		if err := w.Flush(); err != nil {
 			return 1
 		}
-		fmt.Println("\nreview the new definitions, then: blackbox tools accept [-server key] [tool...]")
+		for _, c := range changes {
+			fmt.Printf("\n── %s · %s\n", c.Tool, truncate(names[c.Server], 60))
+			fmt.Print(definitionDiff(c.ApprovedDef, c.PendingDef))
+		}
+		fmt.Println("\nreview the changes above, then: blackbox tools accept [-server key] [tool...]")
 		return 0
 	}
 
@@ -76,4 +82,41 @@ func serverNames(home string) map[string]string {
 		}
 	}
 	return out
+}
+
+// definitionDiff shows how a tool definition changed: its description as text and
+// its input schema as indented JSON, so an added instruction or parameter stands out.
+func definitionDiff(approved, pending json.RawMessage) string {
+	if len(approved) == 0 || len(pending) == 0 {
+		return "  (the earlier definition was recorded before Black Box kept definitions;\n" +
+			"   only the hash is known. Check the server's changelog before accepting.)\n"
+	}
+	d := textdiff.Lines(definitionLines(approved), definitionLines(pending))
+	if !textdiff.Changed(d) {
+		return "  (no visible difference)\n"
+	}
+	return textdiff.Format(d, 3)
+}
+
+func definitionLines(raw json.RawMessage) []string {
+	var def struct {
+		Description string          `json:"description"`
+		Schema      json.RawMessage `json:"schema"`
+	}
+	if err := json.Unmarshal(raw, &def); err != nil {
+		return []string{printable(string(raw))}
+	}
+	lines := []string{"description:"}
+	for _, l := range strings.Split(def.Description, "\n") {
+		lines = append(lines, "  "+printable(l))
+	}
+	lines = append(lines, "schema:")
+	var schema any
+	if err := json.Unmarshal(def.Schema, &schema); err == nil {
+		pretty, _ := json.MarshalIndent(schema, "", "  ")
+		for _, l := range strings.Split(string(pretty), "\n") {
+			lines = append(lines, "  "+printable(l))
+		}
+	}
+	return lines
 }

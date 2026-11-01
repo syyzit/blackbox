@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -35,7 +34,7 @@ type TraceSummary struct {
 // TraceFor merges MCP and externally recorded frames that share an agent session id.
 func TraceFor(home, prefix string) (*Trace, error) {
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))
@@ -123,7 +122,7 @@ func TraceList(home string, limit int) ([]TraceSummary, error) {
 		limit = 20
 	}
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))
