@@ -255,7 +255,7 @@ func compileWildcard(pattern string) *regexp.Regexp {
 // args regex: escapes such as \u0020 or \/ are decoded, whitespace between tokens is
 // dropped, and <, > and & are not escaped. Text that is not JSON is returned as is.
 //
-// Rules are written against the compact form, e.g. "command":"rm -rf.
+// Rules are written against the compact form, e.g. "command":"rm -rf ...".
 func CanonicalArgs(raw string) string {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()

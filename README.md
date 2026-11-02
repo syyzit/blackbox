@@ -66,7 +66,7 @@ make build                        # bin/blackbox and demo binaries
 ./scripts/demo.sh                 # record -> replay -> diff -> gate, end to end
 ```
 
-`blackbox version` prints the release version, or the commit a source build came from.
+`blackbox version` prints the release version, or the Go pseudo-version (which includes the commit) for a source build.
 
 ## Wire it into an agent
 
@@ -218,7 +218,7 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
   denies.
 - `args` regexes match the JSON-decoded, compactly re-encoded `params`, so escapes such as
   `\u0020` or `\/` cannot hide a match. Write them against the compact form, for example
-  `"command":"rm -rf`.
+  `"command":"rm -rf ..."`.
 - A batch (a JSON array of calls) is blocked as a whole if any call in it is denied.
 - The first definition seen for each tool is trusted and stored in
   `~/.blackbox/tooldefs.json`. When `rugPullBlock` is on, a tool whose definition later
@@ -226,7 +226,7 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 
 ```sh
 blackbox tools                          # list changed definitions
-blackbox tools accept                   # accept all of them
+blackbox tools accept -all              # accept all of them
 blackbox tools accept -server <key> read_file
 ```
 

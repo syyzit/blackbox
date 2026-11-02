@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLedgerPersistsWithoutExplicitSave(t *testing.T) {
@@ -75,5 +76,30 @@ func TestLedgerRevertClearsPending(t *testing.T) {
 	}
 	if got := LoadLedger(path).PendingChanges(); len(got) != 0 {
 		t.Fatalf("revert left a pending change behind: %+v", got)
+	}
+}
+
+func TestLedgerSeesExternalAccept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tooldefs.json")
+
+	// This process holds a ledger open for the life of a session.
+	running := LoadLedger(path)
+	LoadLedger(path).Observe("srv", "read_file", "aaaa")
+	LoadLedger(path).Observe("srv", "read_file", "bbbb")
+	time.Sleep(2 * time.Millisecond)
+
+	if !running.IsPending("srv", "read_file") {
+		t.Fatal("running ledger did not see the pending change")
+	}
+
+	// Another process accepts it.
+	time.Sleep(2 * time.Millisecond)
+	if _, err := LoadLedger(path).Accept("srv", "read_file"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+
+	if running.IsPending("srv", "read_file") {
+		t.Fatal("running ledger did not notice the accept")
 	}
 }

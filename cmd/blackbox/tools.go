@@ -22,6 +22,7 @@ func cmdTools(args []string) int {
 	fs := flag.NewFlagSet("tools", flag.ContinueOnError)
 	home := fs.String("home", "", "data directory")
 	server := fs.String("server", "", "only this server key (default: all servers)")
+	all := fs.Bool("all", false, "accept every pending change")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -44,8 +45,13 @@ func cmdTools(args []string) int {
 		if err := w.Flush(); err != nil {
 			return 1
 		}
-		fmt.Println("\nreview the new definitions, then: blackbox tools accept [-server key] [tool...]")
+		fmt.Println("\nreview the new definitions, then: blackbox tools accept -server <key> <tool>... or -all")
 		return 0
+	}
+
+	if !*all && *server == "" && len(fs.Args()) == 0 {
+		fmt.Fprintln(os.Stderr, "blackbox tools accept: name a server (-server key), tool names, or pass -all")
+		return 2
 	}
 
 	accepted, err := ledger.Accept(*server, fs.Args()...)

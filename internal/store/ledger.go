@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Ledger remembers the approved tool definitions for each server command, so a later
@@ -24,6 +25,9 @@ type Ledger struct {
 	// cleared remembers pending entries this process resolved, so a merge with an
 	// older file on disk does not bring them back.
 	cleared map[string]string
+	// lastMod is the ledger's mtime when this process last read or wrote it, used to
+	// notice another process accepting a change.
+	lastMod time.Time
 }
 
 type ledgerData struct {
@@ -43,7 +47,11 @@ type PendingChange struct {
 
 // LoadLedger reads the ledger, tolerating a missing or corrupt file.
 func LoadLedger(path string) *Ledger {
-	return &Ledger{path: path, data: readLedger(path), cleared: map[string]string{}}
+	l := &Ledger{path: path, data: readLedger(path), cleared: map[string]string{}}
+	if info, err := os.Stat(path); err == nil {
+		l.lastMod = info.ModTime()
+	}
+	return l
 }
 
 func readLedger(path string) ledgerData {
@@ -67,6 +75,7 @@ func (l *Ledger) Observe(server, tool, hash string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.refreshLocked()
 	approved, seen := l.data.Servers[server][tool]
 	switch {
 	case !seen:
@@ -96,6 +105,13 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 	defer l.mu.Unlock()
 
 	// Start from the latest file so an accept never loses another process's writes.
+	if l.path != "" {
+		unlock, err := lockLedger(l.path)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
 
 	want := map[string]bool{}
@@ -125,6 +141,7 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 	if err := l.writeLocked(); err != nil {
 		return nil, err
 	}
+	l.touchLocked()
 	return accepted, nil
 }
 
@@ -133,6 +150,7 @@ func (l *Ledger) PendingChanges() []PendingChange {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.refreshLocked()
 	var out []PendingChange
 	for srv, pend := range l.data.Pending {
 		for tool, hash := range pend {
@@ -156,6 +174,7 @@ func (l *Ledger) Save() error {
 func (l *Ledger) IsPending(server, tool string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.refreshLocked()
 	_, ok := l.data.Pending[server][tool]
 	return ok
 }
@@ -164,20 +183,50 @@ func (l *Ledger) IsPending(server, tool string) bool {
 func (l *Ledger) Known(server, tool string) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.refreshLocked()
 	h, ok := l.data.Servers[server][tool]
 	return h, ok
+}
+
+// refreshLocked merges the file if another process has written it since our last read.
+func (l *Ledger) refreshLocked() {
+	if l.path == "" {
+		return
+	}
+	info, err := os.Stat(l.path)
+	if err != nil || !info.ModTime().After(l.lastMod) {
+		return
+	}
+	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	l.lastMod = info.ModTime()
+}
+
+func (l *Ledger) touchLocked() {
+	if info, err := os.Stat(l.path); err == nil {
+		l.lastMod = info.ModTime()
+	}
 }
 
 func (l *Ledger) saveLocked() error {
 	if l.path == "" {
 		return nil
 	}
+	unlock, err := lockLedger(l.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
-	return l.writeLocked()
+	if err := l.writeLocked(); err != nil {
+		return err
+	}
+	l.touchLocked()
+	return nil
 }
 
 // writeLocked replaces the file atomically, so a crash or a concurrent reader never
-// sees a half-written ledger.
+// sees a half-written ledger. The caller holds the ledger lock.
 func (l *Ledger) writeLocked() error {
 	if l.path == "" {
 		return nil

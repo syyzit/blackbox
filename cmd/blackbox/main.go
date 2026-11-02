@@ -160,7 +160,7 @@ Usage:
         Proxy a streamable-HTTP MCP server and record every request.
 
   blackbox tools [-home dir]
-  blackbox tools accept [-home dir] [-server key] [tool...]
+  blackbox tools accept [-home dir] [-server key] [-all] [tool...]
         List tool definitions that changed since they were approved, or accept them.
         A changed tool stays blocked (with rugPullBlock) until it is accepted.
 
