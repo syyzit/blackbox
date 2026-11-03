@@ -350,15 +350,25 @@ func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 	}
 
 	approved := false
+	source := ""
 	if dec.Action == policy.RequireApproval && !shadow {
-		if p.approver != nil {
-			approved = p.approver.Approve(policy.ApprovalRequest{
-				Server: p.server, Tool: req.Tool, Args: req.Args, Reason: dec.Reason,
-			})
+		request := policy.ApprovalRequest{
+			Server: p.server, Tool: req.Tool, Reason: dec.Reason,
+			Args: auditArgs(p.red, req.Args), CallID: msg.IDString(),
+		}
+		switch a := p.approver.(type) {
+		case policy.SourcedApprover:
+			approved, source = a.ApproveSourced(request)
+		case policy.Approver:
+			approved = a.Approve(request)
 		}
 		if approved {
 			dec.Action = policy.Allow
-			dec.Reason += " (approved by user)"
+			if source != "" {
+				dec.Reason += " (approved via " + source + ")"
+			} else {
+				dec.Reason += " (approved by user)"
+			}
 		} else {
 			dec.Action = policy.Deny
 			dec.Reason += " (not approved)"

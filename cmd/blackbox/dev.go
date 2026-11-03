@@ -83,6 +83,7 @@ func cmdDev(args []string) int {
 		openBrowser(sessionURL)
 	}
 
+	approver := timeoutApprover(sess.Home, sess.Meta.ID, *approvalTimeout)
 	runErr := proxy.RunStdio(ctx, proxy.Options{
 		Argv:            argv,
 		Stdin:           os.Stdin,
@@ -97,7 +98,7 @@ func cmdDev(args []string) int {
 		Server:          strings.Join(argv, " "),
 		ServerKey:       sess.Meta.ServerKey,
 		Ledger:          sess.Ledger(),
-		Approver:        timeoutApprover(*approvalTimeout),
+		Approver:        approver,
 		Audit:           sess,
 	})
 	finishCoverage(sess, before)

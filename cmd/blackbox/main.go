@@ -74,6 +74,12 @@ func run(args []string) int {
 		return cmdTrace(args[1:])
 	case "resolve":
 		return cmdResolve(args[1:])
+	case "approvals":
+		return cmdApprovals(args[1:])
+	case "approve":
+		return cmdApprove(args[1:])
+	case "deny":
+		return cmdDeny(args[1:])
 	case "http":
 		return cmdHTTP(args[1:])
 	case "tools":
@@ -153,6 +159,11 @@ Usage:
   blackbox resolve -session <id> -call <id> -decision allow|deny
         Record the answer to a built-in approval request.
 
+  blackbox approvals [-all]
+        List pending approvals (or all of them).
+  blackbox approve <id> | blackbox deny <id>
+        Resolve a pending approval from the terminal.
+
   blackbox ui [-addr 127.0.0.1:8787] [-open]
         Serve the session browser and timeline UI.
 
@@ -219,6 +230,7 @@ func cmdRun(args []string) int {
 	fmt.Fprintf(os.Stderr, "blackbox · session %s\n", sess.Meta.ID)
 	fmt.Fprintf(os.Stderr, "blackbox · recording to %s\n", filepath.Join(sess.Home, "blackbox.db"))
 
+	approver := timeoutApprover(sess.Home, sess.Meta.ID, *approvalTimeout)
 	err = proxy.RunStdio(context.Background(), proxy.Options{
 		Argv:            argv,
 		Stdin:           os.Stdin,
@@ -233,7 +245,7 @@ func cmdRun(args []string) int {
 		Server:          strings.Join(argv, " "),
 		ServerKey:       sess.Meta.ServerKey,
 		Ledger:          sess.Ledger(),
-		Approver:        timeoutApprover(*approvalTimeout),
+		Approver:        approver,
 		Audit:           sess,
 	})
 	finishCoverage(sess, before)
@@ -314,6 +326,7 @@ func cmdHTTP(args []string) int {
 	fmt.Fprintf(os.Stderr, "blackbox · session %s\n", sess.Meta.ID)
 	fmt.Fprintf(os.Stderr, "blackbox · %s -> %s\n", *addr, *upstream)
 
+	approver := timeoutApprover(sess.Home, sess.Meta.ID, *approvalTimeout)
 	err = proxy.RunHTTP(ctx, *addr, proxy.HTTPOptions{
 		Upstream:  *upstream,
 		SessionID: sess.Meta.ID,
@@ -323,7 +336,7 @@ func cmdHTTP(args []string) int {
 		Server:    *upstream,
 		ServerKey: sess.Meta.ServerKey,
 		Ledger:    sess.Ledger(),
-		Approver:  timeoutApprover(*approvalTimeout),
+		Approver:  approver,
 		Audit:     sess,
 	})
 	if err != nil {
@@ -348,8 +361,10 @@ func loadPolicy(home, path string) (*policy.Policy, error) {
 	return policy.Load(path)
 }
 
-func timeoutApprover(timeout time.Duration) policy.Approver {
-	return newTerminalApprover(timeout, openConsole)
+func timeoutApprover(home, sessionID string, timeout time.Duration) policy.Approver {
+	term := newTerminalApprover(timeout, openConsole)
+	term.fallback = queueApprover{home: home, sessionID: sessionID, timeout: timeout}
+	return term
 }
 
 func cmdExport(args []string) int {

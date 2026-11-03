@@ -193,11 +193,17 @@ type ApprovalRequest struct {
 	Tool   string
 	Args   string
 	Reason string
+	CallID string
 }
 
 // Approver asks a human to allow a call.
 type Approver interface {
 	Approve(ApprovalRequest) bool
+}
+
+// SourcedApprover reports where an approval came from (terminal, cli, ui).
+type SourcedApprover interface {
+	ApproveSourced(ApprovalRequest) (approved bool, source string)
 }
 
 // TimeoutApprover bounds how long a human has to answer. A missing or slow answer

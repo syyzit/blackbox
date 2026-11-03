@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -284,6 +285,63 @@ func TestTraceAPI(t *testing.T) {
 	}
 	if session.TraceID != "ses_ui" {
 		t.Fatalf("session trace id = %q", session.TraceID)
+	}
+}
+
+func TestApprovalsAPI(t *testing.T) {
+	home := t.TempDir()
+	sess, err := store.Open(home, []string{"srv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := sess.Meta.ID
+	if err := sess.Close(); err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.CreateApproval(home, store.Approval{
+		SessionID: session, Tool: "echo", Args: `{"text":"hi"}`, Reason: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(home).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/approvals", nil))
+	if rec.Code != 200 {
+		t.Fatalf("list status %d: %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Approvals []store.Approval `json:"approvals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Approvals) != 1 || list.Approvals[0].ID != id {
+		t.Fatalf("approvals = %+v", list.Approvals)
+	}
+
+	body := strings.NewReader(`{"decision":"allow","by":"ui"}`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), body))
+	if rec.Code != 200 {
+		t.Fatalf("decide status %d: %s", rec.Code, rec.Body.String())
+	}
+	got, err := store.ApprovalByID(home, id)
+	if err != nil || got.Status != store.ApprovalApproved || got.DecidedBy != "ui" {
+		t.Fatalf("decided = %+v, %v", got, err)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), strings.NewReader(`{"decision":"deny"}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("second decision status %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), strings.NewReader(`{"decision":"maybe"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad decision status %d", rec.Code)
 	}
 }
 

@@ -471,7 +471,9 @@ func openHomeDB(home string) (*sql.DB, error) {
 func openDB(path string) (*sql.DB, error) {
 	// Per-connection pragmas must travel in the DSN: the pool creates connections
 	// lazily, and a PRAGMA executed once only applies to that one connection.
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	// journal_mode is set separately with a retry, because switching a brand-new
+	// database to WAL takes an exclusive lock that a concurrent process may hold.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open db: %w", err)
@@ -485,7 +487,7 @@ func openDB(path string) (*sql.DB, error) {
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA foreign_keys=ON",
 	} {
-		if _, err := db.Exec(pragma); err != nil {
+		if err := execRetry(db, pragma); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("store: %s: %w", pragma, err)
 		}
@@ -536,6 +538,22 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_tool ON events(session_id, tool);
 
+CREATE TABLE IF NOT EXISTS approvals (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  call_id     TEXT NOT NULL DEFAULT '',
+  server      TEXT NOT NULL DEFAULT '',
+  tool        TEXT NOT NULL DEFAULT '',
+  args        TEXT NOT NULL DEFAULT '',
+  reason      TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'pending',
+  created_at  INTEGER NOT NULL,
+  decided_at  INTEGER NOT NULL DEFAULT 0,
+  decided_by  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+
 CREATE TABLE IF NOT EXISTS coverage (
   session_id  TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   checked_at  INTEGER NOT NULL,
@@ -585,13 +603,13 @@ func migrate(db *sql.DB) error {
 		if stmt == "" {
 			continue
 		}
-		if _, err := db.Exec(stmt); err != nil {
+		if err := execRetry(db, stmt); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
 	// Trigger bodies contain semicolons, so they cannot be split like the DDL above.
 	for _, stmt := range eventTriggers {
-		if _, err := db.Exec(stmt); err != nil {
+		if err := execRetry(db, stmt); err != nil {
 			return fmt.Errorf("store: migrate trigger: %w", err)
 		}
 	}
@@ -629,7 +647,7 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 		if !ok {
-			if _, err := db.Exec(add.ddl); err != nil {
+			if err := execRetry(db, add.ddl); err != nil {
 				return fmt.Errorf("store: add %s.%s: %w", add.table, add.column, err)
 			}
 		}
@@ -652,6 +670,23 @@ var eventTriggers = []string{
 	   INSERT INTO events_fts (rowid, method, tool, args, result, error)
 	   VALUES (new.id, new.method, new.tool, new.args, new.result, new.error);
 	 END`,
+}
+
+// execRetry retries the pragmas and DDL that contend when several processes open a
+// brand-new database at once. DML already waits via busy_timeout; these need a nudge.
+func execRetry(db *sql.DB, query string) error {
+	var err error
+	for i := 0; i < 40; i++ {
+		if _, err = db.Exec(query); err == nil {
+			return nil
+		}
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "locked") && !strings.Contains(msg, "busy") {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return err
 }
 
 func hasColumn(db *sql.DB, table, column string) (bool, error) {

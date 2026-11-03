@@ -330,3 +330,41 @@ func TestRugPullFromEarlierSessionBlocksBeforeToolsList(t *testing.T) {
 	}
 	stop(t, cli, errCh)
 }
+
+type sourcedStub struct{ source string }
+
+func (s sourcedStub) Approve(policy.ApprovalRequest) bool { return true }
+func (s sourcedStub) ApproveSourced(policy.ApprovalRequest) (bool, string) {
+	return true, s.source
+}
+
+func TestApprovalSourceIsAudited(t *testing.T) {
+	pol := &policy.Policy{Default: policy.Allow, Mode: policy.ModeEnforce, Rules: []policy.Rule{
+		{Tool: "echo", Action: policy.RequireApproval, Reason: "needs a human"},
+	}}
+	sink := &memSink{}
+	audit := &memAudit{}
+
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink: sink, Policy: pol, Server: "fake-server", ServerKey: "srvkey",
+		Ledger: newMapLedger(), Approver: sourcedStub{source: "ui"}, Audit: audit,
+	})
+	if _, err := cli.Call("tools/call", map[string]any{"name": "echo", "arguments": map[string]any{"text": "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	stop(t, cli, errCh)
+
+	recs := audit.snapshot()
+	if len(recs) != 1 || !recs[0].Approved || !strings.Contains(recs[0].Reason, "approved via ui") {
+		t.Fatalf("audit = %+v", recs)
+	}
+	for _, e := range sink.snapshot() {
+		if e.Tool == "echo" && e.Direction == event.ClientToServer {
+			if e.Decision != string(policy.Allow) || !strings.Contains(e.DecisionReason, "approved via ui") {
+				t.Fatalf("event = %+v", e)
+			}
+			return
+		}
+	}
+	t.Fatal("echo call not recorded")
+}

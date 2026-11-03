@@ -25,7 +25,8 @@ type terminalApprover struct {
 	timeout time.Duration
 	open    func() (io.Reader, io.Writer, error)
 
-	turn chan struct{} // serializes prompts; a buffered channel so waiting can time out
+	turn     chan struct{} // serializes prompts; a buffered channel so waiting can time out
+	fallback policy.Approver
 
 	mu    sync.Mutex
 	lines chan string // nil until the terminal is open
@@ -62,8 +63,19 @@ func openConsole() (io.Reader, io.Writer, error) {
 }
 
 // Approve shows the request and waits for y/yes. No terminal, a closed terminal, or
-// no answer within the timeout is a denial.
+// no answer within the timeout is a denial. Without a terminal it falls back to the
+// queue, if one is configured.
 func (t *terminalApprover) Approve(r policy.ApprovalRequest) bool {
+	approved, _ := t.approve(r)
+	return approved
+}
+
+// ApproveSourced is Approve plus where the answer came from.
+func (t *terminalApprover) ApproveSourced(r policy.ApprovalRequest) (bool, string) {
+	return t.approve(r)
+}
+
+func (t *terminalApprover) approve(r policy.ApprovalRequest) (bool, string) {
 	deadline := time.NewTimer(t.timeout)
 	defer deadline.Stop()
 
@@ -72,13 +84,19 @@ func (t *terminalApprover) Approve(r policy.ApprovalRequest) bool {
 		defer func() { <-t.turn }()
 	case <-deadline.C:
 		fmt.Fprintf(os.Stderr, "blackbox · %s timed out waiting for another approval: denied\n", r.Tool)
-		return false
+		return false, ""
 	}
 
 	lines, out, err := t.terminal()
 	if err != nil {
+		if t.fallback != nil {
+			if sa, ok := t.fallback.(policy.SourcedApprover); ok {
+				return sa.ApproveSourced(r)
+			}
+			return t.fallback.Approve(r), "queue"
+		}
 		fmt.Fprintf(os.Stderr, "blackbox · %s needs approval but there is no terminal: denied\n", r.Tool)
-		return false
+		return false, ""
 	}
 
 	// Anything typed before this prompt was shown answered an earlier one.
@@ -87,7 +105,7 @@ func (t *terminalApprover) Approve(r policy.ApprovalRequest) bool {
 		case _, ok := <-lines:
 			if !ok {
 				t.reset()
-				return false
+				return false, ""
 			}
 		default:
 			drained = true
@@ -105,13 +123,13 @@ func (t *terminalApprover) Approve(r policy.ApprovalRequest) bool {
 	case line, ok := <-lines:
 		if !ok {
 			t.reset()
-			return false
+			return false, ""
 		}
 		line = strings.ToLower(strings.TrimSpace(line))
-		return line == "y" || line == "yes"
+		return line == "y" || line == "yes", "terminal"
 	case <-deadline.C:
 		fmt.Fprintln(out, "\nblackbox · no answer: denied")
-		return false
+		return false, ""
 	}
 }
 

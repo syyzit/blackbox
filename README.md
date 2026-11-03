@@ -129,6 +129,7 @@ blackbox sessions                       # newest first, with frame counts
 blackbox show <id>                      # timeline: direction, status, latency
 blackbox stats <id>                     # calls, errors, latency, bytes, cost
 blackbox decisions <id>                 # policy audit log
+blackbox approvals                      # pending approvals
 blackbox trace                          # merged agent sessions, newest first
 blackbox trace ses_...                  # one timeline: MCP + built-in calls
 blackbox coverage <id>                  # file changes the recording missed
@@ -214,8 +215,11 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 - `allow` forwards the call.
 - `deny` blocks it with a JSON-RPC error and records the decision.
 - `require_approval` asks on the controlling terminal (`/dev/tty`, or the console on
-  Windows); a timeout (`-approval-timeout`, default 1m) or a non-interactive session
-  denies.
+  Windows); a timeout (`-approval-timeout`, default 1m) denies.
+- If no terminal can be opened, the request goes to the local approval queue instead of
+  being denied: resolve it with `blackbox approvals`, `blackbox approve <id>`,
+  `blackbox deny <id>`, or the **Approvals** button in the UI. Decisions are audited with
+  their source (`terminal`, `cli`, or `ui`).
 - `args` regexes match the JSON-decoded, compactly re-encoded `params`, so escapes such as
   `\u0020` or `\/` cannot hide a match. Write them against the compact form, for example
   `"command":"rm -rf ..."`.
@@ -375,6 +379,7 @@ make vet     # go vet ./...
 make demo    # the full tour against the bundled server
 # dogfooding the recorder on its own development: docs/dogfood.md
 ./scripts/demo-real.sh   # the same tour through the real filesystem MCP server
+./scripts/demo-approve.sh # queue an approval, approve it from the CLI, show the audit
 ```
 
 CI runs `go vet` and `go test -race` on every push.
@@ -410,8 +415,8 @@ into `dist/`.
   `localhost`, not through a custom host name.
 - The HTTP proxy refuses a request whose `Mcp-Method` / `Mcp-Name` headers disagree with
   its JSON-RPC body.
-- An approval prompt blocks the proxied stream while it waits, bounded by
-  `-approval-timeout`. A fully asynchronous approval queue is future work.
+- An approval prompt or queue wait blocks the proxied stream while it waits, bounded by
+  `-approval-timeout`. A fully asynchronous queue is future work.
 - Tested against the protocol spec and the bundled fake server; real-world servers vary.
 
 ## License
