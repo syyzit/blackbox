@@ -223,7 +223,8 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 - `args` regexes match the JSON-decoded, compactly re-encoded `params`, so escapes such as
   `\u0020` or `\/` cannot hide a match. Write them against the compact form, for example
   `"command":"rm -rf ..."`.
-- A batch (a JSON array of calls) is blocked as a whole if any call in it is denied.
+- A batch (a JSON array of calls) is blocked as a whole if any call in it is denied. Only
+  the denied calls are audited, because the rest never execute.
 - The first definition seen for each tool is trusted and stored in
   `~/.blackbox/tooldefs.json`. When `rugPullBlock` is on, a tool whose definition later
   changes is denied, across restarts, until you review and accept it:

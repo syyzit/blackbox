@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/syyzit/blackbox/internal/event"
+	"github.com/syyzit/blackbox/internal/jsonrpc"
 	"github.com/syyzit/blackbox/internal/policy"
 	"github.com/syyzit/blackbox/internal/proxy"
 	"github.com/syyzit/blackbox/internal/redact"
@@ -367,4 +368,40 @@ func TestApprovalSourceIsAudited(t *testing.T) {
 		}
 	}
 	t.Fatal("echo call not recorded")
+}
+
+func TestBatchGateAuditsOnlyDeniedCalls(t *testing.T) {
+	sink := &memSink{}
+	audit := &memAudit{}
+	cli, errCh := startProxiedOpts(t, proxy.Options{
+		Sink: sink, Policy: denyPolicy("fail"), Server: "fake-server",
+		ServerKey: "srvkey", Ledger: newMapLedger(), Audit: audit,
+	})
+
+	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"ok"}}},{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fail","arguments":{}}}]`
+	if err := cli.Send([]byte(batch)); err != nil {
+		t.Fatal(err)
+	}
+	line, err := cli.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var replies []jsonrpc.Message
+	if err := json.Unmarshal(line, &replies); err != nil {
+		t.Fatalf("batch reply is not a JSON array: %s", line)
+	}
+	if len(replies) != 2 || replies[0].Error == nil || replies[1].Error == nil {
+		t.Fatalf("expected an error for every request, got %s", line)
+	}
+
+	stop(t, cli, errCh)
+
+	recs := audit.snapshot()
+	if len(recs) != 1 {
+		t.Fatalf("expected only the denied call to be audited, got %+v", recs)
+	}
+	if recs[0].Tool != "fail" || recs[0].Action != policy.Deny {
+		t.Fatalf("wrong audit record: %+v", recs[0])
+	}
 }

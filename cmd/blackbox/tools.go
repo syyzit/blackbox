@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/syyzit/blackbox/internal/store"
 )
@@ -14,6 +16,9 @@ import (
 // them. A changed definition is reported (and blocked, with rugPullBlock) until a
 // human accepts it here, so a restart never approves a rug-pull by itself.
 func cmdTools(args []string) int {
+	if len(args) > 0 && args[0] == "reset" {
+		return toolsReset(args[1:])
+	}
 	accept := len(args) > 0 && args[0] == "accept"
 	if accept {
 		args = args[1:]
@@ -28,7 +33,11 @@ func cmdTools(args []string) int {
 		return 2
 	}
 
-	ledger := store.LoadLedger(store.LedgerPath(*home))
+	ledger, err := store.LoadLedger(store.LedgerPath(*home))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
 	names := serverNames(*home)
 
 	if !accept {
@@ -82,4 +91,27 @@ func serverNames(home string) map[string]string {
 		}
 	}
 	return out
+}
+
+// toolsReset moves a ledger aside after it has been corrupted, so the next run starts
+// from an empty, trusted history instead of silently forgetting approvals.
+func toolsReset(args []string) int {
+	fs := flag.NewFlagSet("tools reset", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	path := store.LedgerPath(*home)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		fmt.Println("no ledger to reset")
+		return 0
+	}
+	backup := path + ".corrupt-" + time.Now().Format("20060102-150405")
+	if err := os.Rename(path, backup); err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	fmt.Printf("moved %s to %s\n", path, backup)
+	return 0
 }

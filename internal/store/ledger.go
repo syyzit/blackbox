@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,19 +47,32 @@ type PendingChange struct {
 	Pending  string
 }
 
-// LoadLedger reads the ledger, tolerating a missing or corrupt file.
-func LoadLedger(path string) *Ledger {
-	l := &Ledger{path: path, data: readLedger(path), cleared: map[string]string{}}
+// LoadLedger reads the ledger. A missing file is a fresh ledger; a corrupt one is an
+// error, because silently starting over would forget every approved tool definition.
+func LoadLedger(path string) (*Ledger, error) {
+	d, err := readLedger(path)
+	if err != nil {
+		return nil, err
+	}
+	l := &Ledger{path: path, data: d, cleared: map[string]string{}}
 	if info, err := os.Stat(path); err == nil {
 		l.lastMod = info.ModTime()
 	}
-	return l
+	return l, nil
 }
 
-func readLedger(path string) ledgerData {
+func readLedger(path string) (ledgerData, error) {
 	d := ledgerData{}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &d)
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(b, &d); err != nil {
+			return ledgerData{}, fmt.Errorf("ledger %s is corrupt: %w (move it aside or run `blackbox tools reset`)", path, err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// A fresh install has no ledger yet.
+	default:
+		return ledgerData{}, fmt.Errorf("ledger %s: %w", path, err)
 	}
 	if d.Servers == nil {
 		d.Servers = map[string]map[string]string{}
@@ -65,7 +80,7 @@ func readLedger(path string) ledgerData {
 	if d.Pending == nil {
 		d.Pending = map[string]map[string]string{}
 	}
-	return d
+	return d, nil
 }
 
 // Observe reports whether a definition differs from the approved one. A first
@@ -112,7 +127,11 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 		}
 		defer unlock()
 	}
-	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	disk, err := readLedger(l.path)
+	if err != nil {
+		return nil, err
+	}
+	l.data = mergeLedger(disk, l.data, l.cleared)
 
 	want := map[string]bool{}
 	for _, t := range tools {
@@ -197,7 +216,11 @@ func (l *Ledger) refreshLocked() {
 	if err != nil || !info.ModTime().After(l.lastMod) {
 		return
 	}
-	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	disk, err := readLedger(l.path)
+	if err != nil {
+		return // keep the state we have; the next write will surface the error
+	}
+	l.data = mergeLedger(disk, l.data, l.cleared)
 	l.lastMod = info.ModTime()
 }
 
@@ -217,7 +240,11 @@ func (l *Ledger) saveLocked() error {
 	}
 	defer unlock()
 
-	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	disk, err := readLedger(l.path)
+	if err != nil {
+		return err
+	}
+	l.data = mergeLedger(disk, l.data, l.cleared)
 	if err := l.writeLocked(); err != nil {
 		return err
 	}

@@ -29,8 +29,15 @@ type terminalApprover struct {
 	fallback policy.Approver
 
 	mu    sync.Mutex
-	lines chan string // nil until the terminal is open
+	lines chan inputLine // nil until the terminal is open
 	out   io.Writer
+}
+
+// inputLine carries when the terminal reader saw a line, so a late answer to a prompt
+// that already timed out cannot approve the next one.
+type inputLine struct {
+	text string
+	at   time.Time
 }
 
 func newTerminalApprover(timeout time.Duration, open func() (io.Reader, io.Writer, error)) *terminalApprover {
@@ -112,6 +119,7 @@ func (t *terminalApprover) approve(r policy.ApprovalRequest) (bool, string) {
 		}
 	}
 
+	promptedAt := time.Now()
 	args := r.Args
 	if len(args) > 240 {
 		args = args[:240] + "…"
@@ -119,21 +127,26 @@ func (t *terminalApprover) approve(r policy.ApprovalRequest) (bool, string) {
 	fmt.Fprintf(out, "\nblackbox · approval required\n  server  %s\n  tool    %s\n  args    %s\n  reason  %s\nallow? [y/N] ",
 		printable(r.Server), printable(r.Tool), printable(args), printable(r.Reason))
 
-	select {
-	case line, ok := <-lines:
-		if !ok {
-			t.reset()
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.reset()
+				return false, ""
+			}
+			if line.at.Before(promptedAt) {
+				continue // an answer to an earlier prompt
+			}
+			text := strings.ToLower(strings.TrimSpace(line.text))
+			return text == "y" || text == "yes", "terminal"
+		case <-deadline.C:
+			fmt.Fprintln(out, "\nblackbox · no answer: denied")
 			return false, ""
 		}
-		line = strings.ToLower(strings.TrimSpace(line))
-		return line == "y" || line == "yes", "terminal"
-	case <-deadline.C:
-		fmt.Fprintln(out, "\nblackbox · no answer: denied")
-		return false, ""
 	}
 }
 
-func (t *terminalApprover) terminal() (<-chan string, io.Writer, error) {
+func (t *terminalApprover) terminal() (<-chan inputLine, io.Writer, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.lines != nil {
@@ -143,12 +156,12 @@ func (t *terminalApprover) terminal() (<-chan string, io.Writer, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	lines := make(chan string, 16)
+	lines := make(chan inputLine, 16)
 	go func() {
 		defer close(lines)
 		sc := bufio.NewScanner(in)
 		for sc.Scan() {
-			lines <- sc.Text()
+			lines <- inputLine{text: sc.Text(), at: time.Now()}
 		}
 	}()
 	t.lines, t.out = lines, out

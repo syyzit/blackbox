@@ -306,19 +306,47 @@ func (p *pipeline) gate(line []byte) (resp []byte, dec *policy.Decision, blocked
 // the whole batch, and every request in it gets an error so the agent is not left
 // waiting.
 func (p *pipeline) gateBatch(batch []*jsonrpc.Message) ([]byte, *policy.Decision, bool) {
+	type item struct {
+		msg *jsonrpc.Message
+		dec policy.Decision
+		req policy.Request
+	}
+	var items []item
 	var blockedBy *policy.Decision
+
 	for _, msg := range batch {
 		if msg.Method != "tools/call" {
 			continue
 		}
-		d, blocked := p.evaluate(msg)
-		if blocked {
+		dec, req := p.decide(msg)
+		items = append(items, item{msg: msg, dec: dec, req: req})
+		if blockedBy == nil && dec.Action == policy.Deny && dec.Mode != policy.ModeShadow {
+			d := dec
 			blockedBy = &d
-			break
 		}
 	}
+
 	if blockedBy == nil {
-		return nil, nil, false
+		// Nothing is outright denied: run the normal gate so approvals still apply.
+		for _, it := range items {
+			dec, blocked := p.evaluate(it.msg)
+			if blocked {
+				d := dec
+				blockedBy = &d
+				break
+			}
+		}
+		if blockedBy == nil {
+			return nil, nil, false
+		}
+	} else {
+		// Only the denied calls are audited. The others never execute, so recording
+		// an allow decision for them would claim something that did not happen.
+		for _, it := range items {
+			if it.dec.Action == policy.Deny && it.dec.Mode != policy.ModeShadow {
+				p.auditDecision(it.req, it.dec, false)
+			}
+		}
 	}
 
 	var replies []json.RawMessage
@@ -335,10 +363,11 @@ func (p *pipeline) gateBatch(batch []*jsonrpc.Message) ([]byte, *policy.Decision
 	return out, blockedBy, true
 }
 
-func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
+// decide computes the intended action without prompting or auditing, so batch and
+// single-call gates share one policy path.
+func (p *pipeline) decide(msg *jsonrpc.Message) (policy.Decision, policy.Request) {
 	req := policy.Request{Server: p.server, Tool: msg.ToolName(), Args: string(msg.Params)}
 	dec := p.policy.Decide(req)
-	shadow := dec.Mode == policy.ModeShadow
 
 	if dec.Action == policy.Allow && p.isRugPulled(req.Tool) {
 		dec = policy.Decision{
@@ -348,6 +377,15 @@ func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 			Reason: "tool definition changed since it was last approved (review it, then run `blackbox tools accept`)",
 		}
 	}
+	if dec.Mode == policy.ModeShadow {
+		dec.Reason += " (shadow: not enforced)"
+	}
+	return dec, req
+}
+
+func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
+	dec, req := p.decide(msg)
+	shadow := dec.Mode == policy.ModeShadow
 
 	approved := false
 	source := ""
@@ -375,18 +413,19 @@ func (p *pipeline) evaluate(msg *jsonrpc.Message) (policy.Decision, bool) {
 		}
 	}
 
-	if shadow {
-		dec.Reason += " (shadow: not enforced)"
-	}
-
-	if p.audit != nil {
-		_ = p.audit.Record(policy.DecisionRecord{
-			Server: p.server, Tool: req.Tool, Args: auditArgs(p.red, req.Args),
-			Action: dec.Action, Mode: dec.Mode, Approved: approved, Reason: dec.Reason,
-			At: time.Now().UTC(),
-		})
-	}
+	p.auditDecision(req, dec, approved)
 	return dec, dec.Action == policy.Deny && !shadow
+}
+
+func (p *pipeline) auditDecision(req policy.Request, dec policy.Decision, approved bool) {
+	if p.audit == nil {
+		return
+	}
+	_ = p.audit.Record(policy.DecisionRecord{
+		Server: p.server, Tool: req.Tool, Args: auditArgs(p.red, req.Args),
+		CallID: "", Action: dec.Action, Mode: dec.Mode, Approved: approved,
+		Reason: dec.Reason, At: time.Now().UTC(),
+	})
 }
 
 // auditArgs is the only copy of the arguments that leaves the process for the audit

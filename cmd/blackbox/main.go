@@ -174,6 +174,8 @@ Usage:
   blackbox tools accept [-home dir] [-server key] [-all] [tool...]
         List tool definitions that changed since they were approved, or accept them.
         A changed tool stays blocked (with rugPullBlock) until it is accepted.
+  blackbox tools reset
+        Move a corrupt tool ledger aside and start a fresh one.
 
   blackbox version
 

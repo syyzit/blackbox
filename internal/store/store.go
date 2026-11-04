@@ -90,11 +90,16 @@ func Open(home string, argv []string) (*Session, error) {
 		return nil, fmt.Errorf("store: insert session: %w", err)
 	}
 
+	ledger, err := LoadLedger(LedgerPath(home))
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: %w", err)
+	}
 	return &Session{
 		Meta:   meta,
 		Home:   home,
 		db:     db,
-		ledger: LoadLedger(LedgerPath(home)),
+		ledger: ledger,
 	}, nil
 }
 
