@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/syyzit/blackbox/internal/store"
 	"github.com/syyzit/blackbox/internal/textdiff"
@@ -16,6 +18,9 @@ import (
 // them. A changed definition is reported (and blocked, with rugPullBlock) until a
 // human accepts it here, so a restart never approves a rug-pull by itself.
 func cmdTools(args []string) int {
+	if len(args) > 0 && args[0] == "reset" {
+		return toolsReset(args[1:])
+	}
 	accept := len(args) > 0 && args[0] == "accept"
 	if accept {
 		args = args[1:]
@@ -24,12 +29,17 @@ func cmdTools(args []string) int {
 	fs := flag.NewFlagSet("tools", flag.ContinueOnError)
 	home := fs.String("home", "", "data directory")
 	server := fs.String("server", "", "only this server key (default: all servers)")
+	all := fs.Bool("all", false, "accept every pending change")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	ledger := store.LoadLedger(store.LedgerPath(*home))
+	ledger, err := store.LoadLedger(store.LedgerPath(*home))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
 	names := serverNames(*home)
 
 	if !accept {
@@ -50,8 +60,13 @@ func cmdTools(args []string) int {
 			fmt.Printf("\n── %s · %s\n", c.Tool, truncate(names[c.Server], 60))
 			fmt.Print(definitionDiff(c.ApprovedDef, c.PendingDef))
 		}
-		fmt.Println("\nreview the changes above, then: blackbox tools accept [-server key] [tool...]")
+		fmt.Println("\nreview the changes above, then: blackbox tools accept [-server key] [tool...] or -all")
 		return 0
+	}
+
+	if !*all && *server == "" && len(fs.Args()) == 0 {
+		fmt.Fprintln(os.Stderr, "blackbox tools accept: name a server (-server key), tool names, or pass -all")
+		return 2
 	}
 
 	accepted, err := ledger.Accept(*server, fs.Args()...)
@@ -119,4 +134,27 @@ func definitionLines(raw json.RawMessage) []string {
 		}
 	}
 	return lines
+}
+
+// toolsReset moves a ledger aside after it has been corrupted, so the next run starts
+// from an empty, trusted history instead of silently forgetting approvals.
+func toolsReset(args []string) int {
+	fs := flag.NewFlagSet("tools reset", flag.ContinueOnError)
+	home := fs.String("home", "", "data directory")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	path := store.LedgerPath(*home)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		fmt.Println("no ledger to reset")
+		return 0
+	}
+	backup := path + ".corrupt-" + time.Now().Format("20060102-150405")
+	if err := os.Rename(path, backup); err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+	fmt.Printf("moved %s to %s\n", path, backup)
+	return 0
 }

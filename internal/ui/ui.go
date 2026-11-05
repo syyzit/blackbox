@@ -5,6 +5,8 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -37,6 +39,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/traces", s.handleTraces)
 	mux.HandleFunc("/api/traces/", s.handleTrace)
+	mux.HandleFunc("/api/approvals", s.handleApprovals)
+	mux.HandleFunc("/api/approvals/", s.handleApprovalDecision)
 
 	sub, err := fs.Sub(embedded, "static")
 	if err != nil {
@@ -118,6 +122,67 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		"coverage":  cov,
 		"traceId":   traceID,
 	})
+}
+
+func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	list, err := store.ListApprovals(s.Home, r.URL.Query().Get("all") != "1", 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if list == nil {
+		list = []store.Approval{}
+	}
+	writeJSON(w, map[string]any{"approvals": list})
+}
+
+func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	raw := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/approvals/"), "/")
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	var body struct {
+		Decision string `json:"decision"`
+		By       string `json:"by"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	var approved bool
+	switch body.Decision {
+	case "allow", "approve", "approved":
+		approved = true
+	case "deny", "denied":
+		approved = false
+	default:
+		writeError(w, http.StatusBadRequest, "decision must be allow or deny")
+		return
+	}
+	by := body.By
+	if by == "" {
+		by = "ui"
+	}
+	if err := store.DecideApproval(s.Home, id, approved, by); err != nil {
+		if errors.Is(err, store.ErrAlreadyDecided) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "id": id, "approved": approved})
 }
 
 func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {

@@ -193,11 +193,17 @@ type ApprovalRequest struct {
 	Tool   string
 	Args   string
 	Reason string
+	CallID string
 }
 
 // Approver asks a human to allow a call.
 type Approver interface {
 	Approve(ApprovalRequest) bool
+}
+
+// SourcedApprover reports where an approval came from (terminal, cli, ui).
+type SourcedApprover interface {
+	ApproveSourced(ApprovalRequest) (approved bool, source string)
 }
 
 // TimeoutApprover bounds how long a human has to answer. A missing or slow answer
@@ -255,7 +261,7 @@ func compileWildcard(pattern string) *regexp.Regexp {
 // args regex: escapes such as \u0020 or \/ are decoded, whitespace between tokens is
 // dropped, and <, > and & are not escaped. Text that is not JSON is returned as is.
 //
-// Rules are written against the compact form, e.g. "command":"rm -rf.
+// Rules are written against the compact form, e.g. "command":"rm -rf ...".
 func CanonicalArgs(raw string) string {
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()

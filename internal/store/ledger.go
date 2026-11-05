@@ -2,10 +2,13 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Ledger remembers the approved tool definitions for each server command, so a later
@@ -26,6 +29,9 @@ type Ledger struct {
 	cleared map[string]string
 	// dirty is set when a definition was remembered that is not on disk yet.
 	dirty bool
+	// lastMod is the ledger's mtime when this process last read or wrote it, used to
+	// notice another process accepting a change.
+	lastMod time.Time
 }
 
 type ledgerData struct {
@@ -51,15 +57,32 @@ type PendingChange struct {
 	PendingDef  json.RawMessage
 }
 
-// LoadLedger reads the ledger, tolerating a missing or corrupt file.
-func LoadLedger(path string) *Ledger {
-	return &Ledger{path: path, data: readLedger(path), cleared: map[string]string{}}
+// LoadLedger reads the ledger. A missing file is a fresh ledger; a corrupt one is an
+// error, because silently starting over would forget every approved tool definition.
+func LoadLedger(path string) (*Ledger, error) {
+	d, err := readLedger(path)
+	if err != nil {
+		return nil, err
+	}
+	l := &Ledger{path: path, data: d, cleared: map[string]string{}}
+	if info, err := os.Stat(path); err == nil {
+		l.lastMod = info.ModTime()
+	}
+	return l, nil
 }
 
-func readLedger(path string) ledgerData {
+func readLedger(path string) (ledgerData, error) {
 	d := ledgerData{}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &d)
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(b, &d); err != nil {
+			return ledgerData{}, fmt.Errorf("ledger %s is corrupt: %w (move it aside or run `blackbox tools reset`)", path, err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// A fresh install has no ledger yet.
+	default:
+		return ledgerData{}, fmt.Errorf("ledger %s: %w", path, err)
 	}
 	if d.Servers == nil {
 		d.Servers = map[string]map[string]string{}
@@ -70,7 +93,7 @@ func readLedger(path string) ledgerData {
 	if d.Definitions == nil {
 		d.Definitions = map[string]json.RawMessage{}
 	}
-	return d
+	return d, nil
 }
 
 // RememberDefinition keeps the canonical definition behind a hash. It is written with
@@ -92,6 +115,7 @@ func (l *Ledger) Observe(server, tool, hash string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.refreshLocked()
 	approved, seen := l.data.Servers[server][tool]
 	switch {
 	case !seen:
@@ -127,7 +151,18 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 	defer l.mu.Unlock()
 
 	// Start from the latest file so an accept never loses another process's writes.
-	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	if l.path != "" {
+		unlock, err := lockLedger(l.path)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
+	disk, err := readLedger(l.path)
+	if err != nil {
+		return nil, err
+	}
+	l.data = mergeLedger(disk, l.data, l.cleared)
 
 	want := map[string]bool{}
 	for _, t := range tools {
@@ -154,6 +189,7 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 	if err := l.writeLocked(); err != nil {
 		return nil, err
 	}
+	l.touchLocked()
 	return accepted, nil
 }
 
@@ -162,6 +198,7 @@ func (l *Ledger) PendingChanges() []PendingChange {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.refreshLocked()
 	var out []PendingChange
 	for srv, pend := range l.data.Pending {
 		for tool, hash := range pend {
@@ -183,6 +220,7 @@ func (l *Ledger) Save() error {
 func (l *Ledger) IsPending(server, tool string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.refreshLocked()
 	_, ok := l.data.Pending[server][tool]
 	return ok
 }
@@ -200,24 +238,59 @@ func (l *Ledger) changeLocked(server, tool, pending string) PendingChange {
 func (l *Ledger) Known(server, tool string) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.refreshLocked()
 	h, ok := l.data.Servers[server][tool]
 	return h, ok
+}
+
+// refreshLocked merges the file if another process has written it since our last read.
+func (l *Ledger) refreshLocked() {
+	if l.path == "" {
+		return
+	}
+	info, err := os.Stat(l.path)
+	if err != nil || !info.ModTime().After(l.lastMod) {
+		return
+	}
+	disk, err := readLedger(l.path)
+	if err != nil {
+		return // keep the state we have; the next write will surface the error
+	}
+	l.data = mergeLedger(disk, l.data, l.cleared)
+	l.lastMod = info.ModTime()
+}
+
+func (l *Ledger) touchLocked() {
+	if info, err := os.Stat(l.path); err == nil {
+		l.lastMod = info.ModTime()
+	}
 }
 
 func (l *Ledger) saveLocked() error {
 	if l.path == "" {
 		return nil
 	}
-	l.data = mergeLedger(readLedger(l.path), l.data, l.cleared)
+	unlock, err := lockLedger(l.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	disk, err := readLedger(l.path)
+	if err != nil {
+		return err
+	}
+	l.data = mergeLedger(disk, l.data, l.cleared)
 	if err := l.writeLocked(); err != nil {
 		return err
 	}
 	l.dirty = false
+	l.touchLocked()
 	return nil
 }
 
 // writeLocked replaces the file atomically, so a crash or a concurrent reader never
-// sees a half-written ledger.
+// sees a half-written ledger. The caller holds the ledger lock.
 func (l *Ledger) writeLocked() error {
 	if l.path == "" {
 		return nil

@@ -51,14 +51,22 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 
 ## Install
 
+Download a prebuilt binary for Windows, macOS or Linux (amd64 or arm64) from the
+[releases page](https://github.com/syyzit/blackbox/releases), unpack it, and put
+`blackbox` (or `blackbox.exe`) on your `PATH`. Check the download against
+`checksums.txt` from the same release.
+
+With Go 1.26+ you can also install or build from source:
+
 ```sh
+go install github.com/syyzit/blackbox/cmd/blackbox@latest
+# or, from a checkout
 ./scripts/install.sh              # builds and installs to ~/.local/bin
-# or
 make build                        # bin/blackbox and demo binaries
 ./scripts/demo.sh                 # record -> replay -> diff -> gate, end to end
 ```
 
-Requires Go 1.26+.
+`blackbox version` prints the release version, or the Go pseudo-version (which includes the commit) for a source build.
 
 ## Wire it into an agent
 
@@ -121,6 +129,7 @@ blackbox sessions                       # newest first, with frame counts
 blackbox show <id>                      # timeline: direction, status, latency
 blackbox stats <id>                     # calls, errors, latency, bytes, cost
 blackbox decisions <id>                 # policy audit log
+blackbox approvals                      # pending approvals
 blackbox trace                          # merged agent sessions, newest first
 blackbox trace ses_...                  # one timeline: MCP + built-in calls
 blackbox coverage <id>                  # file changes the recording missed
@@ -206,19 +215,23 @@ Copy [`docs/policy.example.json`](docs/policy.example.json) to `~/.blackbox/poli
 - `allow` forwards the call.
 - `deny` blocks it with a JSON-RPC error and records the decision.
 - `require_approval` asks on the controlling terminal (`/dev/tty`, or the console on
-  Windows); a timeout (`-approval-timeout`, default 1m) or a non-interactive session
-  denies.
+  Windows); a timeout (`-approval-timeout`, default 1m) denies.
+- If no terminal can be opened, the request goes to the local approval queue instead of
+  being denied: resolve it with `blackbox approvals`, `blackbox approve <id>`,
+  `blackbox deny <id>`, or the **Approvals** button in the UI. Decisions are audited with
+  their source (`terminal`, `cli`, or `ui`).
 - `args` regexes match the JSON-decoded, compactly re-encoded `params`, so escapes such as
   `\u0020` or `\/` cannot hide a match. Write them against the compact form, for example
-  `"command":"rm -rf`.
-- A batch (a JSON array of calls) is blocked as a whole if any call in it is denied.
+  `"command":"rm -rf ..."`.
+- A batch (a JSON array of calls) is blocked as a whole if any call in it is denied. Only
+  the denied calls are audited, because the rest never execute.
 - The first definition seen for each tool is trusted and stored in
   `~/.blackbox/tooldefs.json`. When `rugPullBlock` is on, a tool whose definition later
   changes is denied, across restarts, until you review and accept it:
 
 ```sh
 blackbox tools                          # show what changed in each definition
-blackbox tools accept                   # accept all of them
+blackbox tools accept -all              # accept all of them
 blackbox tools accept -server <key> read_file
 ```
 
@@ -387,9 +400,16 @@ make vet     # go vet ./...
 make demo    # the full tour against the bundled server
 # dogfooding the recorder on its own development: docs/dogfood.md
 ./scripts/demo-real.sh   # the same tour through the real filesystem MCP server
+./scripts/demo-approve.sh # queue an approval, approve it from the CLI, show the audit
 ```
 
 CI runs `go vet` and `go test -race` on every push.
+
+To release, tag and push: `git tag v0.2.0 && git push origin v0.2.0`. The release
+workflow runs GoReleaser, which builds every platform with the tag as the version and
+creates a draft release with the archives and checksums. Review the notes, then
+publish it. `goreleaser release --snapshot --clean` builds the same archives locally
+into `dist/`.
 
 ## Limitations
 
@@ -416,8 +436,8 @@ CI runs `go vet` and `go test -race` on every push.
   `localhost`, not through a custom host name.
 - The HTTP proxy refuses a request whose `Mcp-Method` / `Mcp-Name` headers disagree with
   its JSON-RPC body.
-- An approval prompt blocks the proxied stream while it waits, bounded by
-  `-approval-timeout`. A fully asynchronous approval queue is future work.
+- An approval prompt or queue wait blocks the proxied stream while it waits, bounded by
+  `-approval-timeout`. A fully asynchronous queue is future work.
 - Recordings are private to your user: the data directory is created `0700` and the
   database, ledger and exports are `0600` (on Windows, your profile's permissions
   apply). Redaction only catches known credential shapes, so treat a recording like
