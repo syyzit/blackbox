@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/syyzit/blackbox/internal/event"
-	"github.com/syyzit/blackbox/internal/redact"
 	"github.com/syyzit/blackbox/internal/store"
 )
 
@@ -62,7 +61,11 @@ func cmdIngest(args []string) int {
 		duration = 0
 	}
 
-	red := redact.Default()
+	red, err := loadRedactor(*home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
 	callID := p.CallID
 	if callID == "" {
 		callID = fmt.Sprintf("ext-%d", p.At.UnixNano())

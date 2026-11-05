@@ -86,9 +86,56 @@ var defaultRules = []Rule{
 		Replace: "[REDACTED:github-token]",
 	},
 	{
+		Name:    "github-fine-grained-token",
+		Re:      regexp.MustCompile(`github_pat_[A-Za-z0-9_]{22,}`),
+		Replace: "[REDACTED:github-token]",
+	},
+	{
+		Name:    "gitlab-token",
+		Re:      regexp.MustCompile(`glpat-[A-Za-z0-9_-]{20,}`),
+		Replace: "[REDACTED:gitlab-token]",
+	},
+	{
 		Name:    "aws-access-key",
 		Re:      regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
 		Replace: "[REDACTED:aws-access-key]",
+	},
+	{
+		Name:    "google-api-key",
+		Re:      regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`),
+		Replace: "[REDACTED:google-api-key]",
+	},
+	{
+		Name:    "stripe-key",
+		Re:      regexp.MustCompile(`(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}`),
+		Replace: "[REDACTED:stripe-key]",
+	},
+	{
+		Name:    "slack-token",
+		Re:      regexp.MustCompile(`xox[abposr]-[A-Za-z0-9-]{10,}`),
+		Replace: "[REDACTED:slack-token]",
+	},
+	{
+		Name:    "slack-webhook",
+		Re:      regexp.MustCompile(`https://hooks\.slack\.com/services/[A-Za-z0-9/_-]{20,}`),
+		Replace: "[REDACTED:slack-webhook]",
+	},
+	{
+		Name:    "npm-token",
+		Re:      regexp.MustCompile(`npm_[A-Za-z0-9]{36}`),
+		Replace: "[REDACTED:npm-token]",
+	},
+	{
+		Name:    "huggingface-token",
+		Re:      regexp.MustCompile(`hf_[A-Za-z0-9]{30,}`),
+		Replace: "[REDACTED:huggingface-token]",
+	},
+	{
+		// Keeps the scheme, host and user, drops the password:
+		// postgres://app:[REDACTED:password]@db:5432/prod
+		Name:    "url-credentials",
+		Re:      regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@"]+:)[^\s@/"]+@`),
+		Replace: "${1}[REDACTED:password]@",
 	},
 	{
 		Name:    "bearer-token",
@@ -105,7 +152,7 @@ var defaultRules = []Rule{
 		// starting with "[" is not matched, so text that was already redacted
 		// ("password": "[REDACTED:secret]") is left alone on a second pass.
 		Name:    "secret-assignment",
-		Re:      regexp.MustCompile(`(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|authorization)"?\s*[:=]\s*"?)([^\s",}\]\[][^\s",}\]]{5,})`),
+		Re:      regexp.MustCompile(`(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|client[_-]?secret|secret|password|passwd|private[_-]?key|credentials?|authorization)"?\s*[:=]\s*"?)([^\s",}\]\[][^\s",}\]]{5,})`),
 		Replace: "${1}[REDACTED:secret]",
 	},
 }
