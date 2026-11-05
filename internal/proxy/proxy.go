@@ -62,6 +62,9 @@ type Options struct {
 	Approver policy.Approver
 	// Audit persists policy decisions.
 	Audit policy.Auditor
+	// MaxFrameBytes bounds how much of one frame is held in memory. Zero means
+	// DefaultMaxFrame.
+	MaxFrameBytes int
 }
 
 // RunStdio proxies an MCP stdio server until the child exits.
@@ -106,6 +109,7 @@ func RunStdio(ctx context.Context, o Options) error {
 		Ledger:    o.Ledger,
 		Approver:  o.Approver,
 		Audit:     o.Audit,
+		MaxFrame:  o.MaxFrameBytes,
 	})
 
 	// Agent -> server. Closes the child's stdin on EOF so a piped run terminates.
@@ -172,6 +176,7 @@ type pipelineConfig struct {
 	Ledger    Ledger
 	Approver  policy.Approver
 	Audit     policy.Auditor
+	MaxFrame  int
 }
 
 type pipeline struct {
@@ -181,6 +186,7 @@ type pipeline struct {
 	seq       atomic.Int64
 	priceIn   float64
 	priceOut  float64
+	maxFrame  int
 
 	agentOut    io.Writer
 	writeMu     sync.Mutex
@@ -205,7 +211,11 @@ type pipeline struct {
 }
 
 func newPipeline(c pipelineConfig) *pipeline {
+	if c.MaxFrame <= 0 {
+		c.MaxFrame = DefaultMaxFrame
+	}
 	return &pipeline{
+		maxFrame:      c.MaxFrame,
 		sessionID:     c.SessionID,
 		sink:          c.Sink,
 		red:           c.Redactor,
@@ -230,7 +240,11 @@ func newPipeline(c pipelineConfig) *pipeline {
 func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error {
 	br := bufio.NewReaderSize(src, 64*1024)
 	for {
-		line, readErr := br.ReadBytes('\n')
+		line, oversize, readErr := readFrame(br, p.maxFrame)
+		if oversize {
+			readErr = p.oversize(dst, br, dir, line)
+			line = nil
+		}
 		if len(line) > 0 {
 			if dir == event.ClientToServer {
 				resp, dec, blocked := p.gate(line)
@@ -721,9 +735,14 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		if e.Method == "tools/list" {
 			if defs, err := jsonrpc.ParseTools(msg.Result); err == nil {
 				for _, d := range defs {
-					hash := HashTool(d)
+					canonical := CanonicalTool(d)
+					sum := sha256.Sum256(canonical)
+					hash := hex.EncodeToString(sum[:])[:16]
 					changed := false
 					if p.ledger != nil {
+						if dl, ok := p.ledger.(DefinitionLedger); ok {
+							dl.RememberDefinition(hash, canonical)
+						}
 						changed = p.ledger.Observe(p.serverKey, d.Name, hash)
 					}
 					if changed && (p.policy == nil || p.policy.RugPullBlock) {
@@ -750,6 +769,14 @@ func (p *pipeline) emit(e event.Event) {
 //
 // The schema is decoded and re-encoded so key order does not affect the hash.
 func HashTool(d jsonrpc.ToolDefinition) string {
+	sum := sha256.Sum256(CanonicalTool(d))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// CanonicalTool is the exact text HashTool hashes: name, description and the
+// key-sorted input schema. The ledger keeps it so a change can be shown, not just
+// detected. Changing this changes every hash, so existing approvals would be lost.
+func CanonicalTool(d jsonrpc.ToolDefinition) []byte {
 	var schema any
 	_ = json.Unmarshal(d.InputSchema, &schema)
 	canonical, _ := json.Marshal(struct {
@@ -757,8 +784,13 @@ func HashTool(d jsonrpc.ToolDefinition) string {
 		Description string `json:"description"`
 		Schema      any    `json:"schema"`
 	}{d.Name, d.Description, schema})
-	sum := sha256.Sum256(canonical)
-	return hex.EncodeToString(sum[:])[:16]
+	return canonical
+}
+
+// DefinitionLedger is implemented by ledgers that keep the definition behind each
+// hash, so a reviewer can see what changed.
+type DefinitionLedger interface {
+	RememberDefinition(hash string, def []byte)
 }
 
 func syntheticError(msg *jsonrpc.Message, reason string) []byte {

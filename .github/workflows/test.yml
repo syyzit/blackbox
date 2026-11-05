@@ -7,11 +7,34 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
+      # Check out with LF endings everywhere, so gofmt and byte-level tests see the
+      # same files on Windows as on Linux.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+      - name: gofmt
+        if: runner.os == 'Linux'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
       - run: go vet ./...
       - run: go test -race ./...
+      # Run each fuzz target briefly on top of the seed corpus `go test` already ran.
+      - name: fuzz (short)
+        if: runner.os == 'Linux'
+        run: |
+          for pkg in $(go list ./...); do
+            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              go test "$pkg" -run '^$' -fuzz "^${target}\$" -fuzztime 10s
+            done
+          done

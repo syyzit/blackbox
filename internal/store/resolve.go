@@ -2,7 +2,6 @@ package store
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
@@ -13,7 +12,7 @@ func ResolveDecision(home, sessionID, callID string, approved bool, note string)
 		return fmt.Errorf("store: resolve needs a call id")
 	}
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))

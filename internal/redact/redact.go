@@ -101,9 +101,11 @@ var defaultRules = []Rule{
 		Replace: "[REDACTED:jwt]",
 	},
 	{
-		// Keeps the key name, drops the value: "password": "hunter2"
+		// Keeps the key name, drops the value: "password": "hunter2". A value
+		// starting with "[" is not matched, so text that was already redacted
+		// ("password": "[REDACTED:secret]") is left alone on a second pass.
 		Name:    "secret-assignment",
-		Re:      regexp.MustCompile(`(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|authorization)"?\s*[:=]\s*"?)([^\s",}\]]{6,})`),
+		Re:      regexp.MustCompile(`(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret|password|passwd|authorization)"?\s*[:=]\s*"?)([^\s",}\]\[][^\s",}\]]{5,})`),
 		Replace: "${1}[REDACTED:secret]",
 	},
 }
