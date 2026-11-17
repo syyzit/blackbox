@@ -59,6 +59,50 @@ func TestHookStillRequiresTheFieldsItDecidesOn(t *testing.T) {
 	}
 }
 
+// The same input under an enforced policy: exit 1 would let the tool run, so a call
+// that might be about to run and cannot be read is denied, as oversized input is.
+// What is certainly not a PreToolUse stays a plain error.
+func TestHookUnreadableInputUnderEnforcedPolicy(t *testing.T) {
+	const shadow = `{"default":"allow","mode":"shadow","rules":[{"tool":"Bash","action":"deny"}]}`
+	cases := []struct {
+		name, policy, input string
+		deny                bool
+	}{
+		{"not JSON", denyBash, `not json`, true},
+		{"not an object", denyBash, `["not","an","object"]`, true},
+		{"cut-off object", denyBash, `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{`, true},
+		{"missing fields", denyBash, `{"hook_event_name":"PreToolUse"}`, true},
+		{"missing tool", denyBash, `{"session_id":"s1","hook_event_name":"PreToolUse"}`, true},
+		{"tool not a string", denyBash, `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":5}`, true},
+		{"session not a string", denyBash, `{"session_id":["s1"],"hook_event_name":"PreToolUse","tool_name":"Bash"}`, true},
+		{"event not a string", denyBash, `{"session_id":"s1","hook_event_name":{"x":1},"tool_name":"Bash"}`, true},
+		{"restrictive default", `{"default":"deny"}`, `not json`, true},
+		{"finished call without tool", denyBash, `{"session_id":"s1","hook_event_name":"PostToolUse"}`, false},
+		{"MCP tool left to the proxy", denyBash, `{"hook_event_name":"PreToolUse","tool_name":"mcp__fs__read"}`, false},
+		{"shadow mode", shadow, `not json`, false},
+		{"allow-all policy", `{"default":"allow"}`, `not json`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			writePolicy(t, home, tc.policy)
+			code, out, errw := hookRun(t, hookOptions{home: home}, tc.input)
+			if !tc.deny {
+				if code != 1 || out != "" {
+					t.Fatalf("code=%d stdout=%q stderr=%q, want a plain error", code, out, errw)
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("exit %d (%s): unreadable input got past an enforced policy", code, strings.TrimSpace(errw))
+			}
+			if decision, reason := permissionDecision(t, out); decision != "deny" || !strings.Contains(reason, "could not be read") {
+				t.Fatalf("decision=%q reason=%q", decision, reason)
+			}
+		})
+	}
+}
+
 func TestHookRecordsLenientFields(t *testing.T) {
 	home := t.TempDir()
 	code, _, errw := hookRun(t, hookOptions{home: home}, `{"session_id":"s1",
