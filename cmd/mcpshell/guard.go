@@ -64,17 +64,47 @@ var findActions = map[string]bool{
 	"-fprint": true, "-fprint0": true, "-fprintf": true, "-fls": true,
 }
 
-// checkPathArg rejects an argument (or a --flag=value) that names a path outside the
-// root: an absolute path, or a relative one that climbs out with "..".
+// checkPathArg rejects an argument (or a --flag=value, or a short option's attached
+// value) that names a path outside the root: an absolute path, a relative one that
+// climbs out with "..", or one that leads out through a symlink.
 func checkPathArg(root, dir, arg string) error {
-	v := arg
-	if strings.HasPrefix(v, "-") {
-		i := strings.IndexByte(v, '=')
+	switch {
+	case strings.HasPrefix(arg, "--"):
+		i := strings.IndexByte(arg, '=')
 		if i < 0 {
 			return nil
 		}
-		v = v[i+1:]
+		return checkPathValue(root, dir, arg, arg[i+1:])
+	case strings.HasPrefix(arg, "-"):
+		// A Go-style flag: -o=<file>.
+		if i := strings.IndexByte(arg, '='); i >= 0 {
+			if err := checkPathValue(root, dir, arg, arg[i+1:]); err != nil {
+				return err
+			}
+		}
+		// A short option can carry its value attached (grep -f<file>, make -C<dir>),
+		// after other flags bundled with it (-rf<file>). Which letters take a value
+		// differs by command, so whatever follows each letter of the leading bundle is
+		// checked as a value. The bundle ends at the first character that cannot be an
+		// option letter, so go test -run=TestX/sub is not taken to name /sub.
+		for i := 2; i < len(arg) && isOptionLetter(arg[i-1]); i++ {
+			if err := checkPathValue(root, dir, arg, arg[i:]); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
+	return checkPathValue(root, dir, arg, arg)
+}
+
+// isOptionLetter reports whether c can be a short option, or a digit of a numeric one
+// (grep -5).
+func isOptionLetter(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
+}
+
+// checkPathValue checks v, which is arg or part of it, as a path.
+func checkPathValue(root, dir, arg, v string) error {
 	if v == "" {
 		return nil
 	}
