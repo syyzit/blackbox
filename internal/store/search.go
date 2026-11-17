@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/syyzit/blackbox/internal/event"
 )
@@ -55,7 +57,7 @@ func Search(home string, opts SearchOptions) ([]SearchHit, error) {
 	}
 	prefix := ""
 	if opts.SessionID != "" {
-		prefix = opts.SessionID + "%"
+		prefix = escapeLike(opts.SessionID) + "%"
 	}
 
 	rows, err := db.Query(
@@ -71,7 +73,7 @@ func Search(home string, opts SearchOptions) ([]SearchHit, error) {
 		    AND (? = '' OR e.tool = ?)
 		    AND (? = '' OR e.status = ?)
 		    AND (? = 0 OR e.at >= ?)
-		    AND (? = '' OR s.id LIKE ?)
+		    AND (? = '' OR s.id LIKE ? ESCAPE '\')
 		  ORDER BY e.at DESC
 		  LIMIT ?`,
 		match,
@@ -143,17 +145,25 @@ func SearchSnippet(e event.Event, query string) string {
 		if field == "" {
 			continue
 		}
-		idx := strings.Index(strings.ToLower(field), strings.ToLower(strings.TrimSpace(query)))
+		idx := indexFold(field, strings.TrimSpace(query))
 		if idx < 0 {
 			continue
 		}
+		// Widen to rune boundaries so the window never starts or ends inside a
+		// multi-byte character.
 		start := idx - 40
 		if start < 0 {
 			start = 0
 		}
+		for start > 0 && !utf8.RuneStart(field[start]) {
+			start--
+		}
 		end := idx + 80
 		if end > len(field) {
 			end = len(field)
+		}
+		for end < len(field) && !utf8.RuneStart(field[end]) {
+			end++
 		}
 		out := field[start:end]
 		if start > 0 {
@@ -169,3 +179,41 @@ func SearchSnippet(e event.Event, query string) string {
 	}
 	return e.Args
 }
+
+// indexFold returns the byte offset in s of the first case-insensitive occurrence of
+// substr, or -1. The offset is into s itself: searching a lowercased copy would give
+// an offset into the copy, and lowercasing can change a rune's encoded length.
+func indexFold(s, substr string) int {
+	if substr == "" {
+		return 0
+	}
+	first, _ := utf8.DecodeRuneInString(substr)
+	first = unicode.ToLower(first)
+	for i, r := range s {
+		if unicode.ToLower(r) == first && hasPrefixFold(s[i:], substr) {
+			return i
+		}
+	}
+	return -1
+}
+
+// hasPrefixFold reports whether s starts with prefix, comparing rune by rune without
+// regard to case.
+func hasPrefixFold(s, prefix string) bool {
+	for _, want := range prefix {
+		got, size := utf8.DecodeRuneInString(s)
+		if size == 0 || unicode.ToLower(got) != unicode.ToLower(want) {
+			return false
+		}
+		s = s[size:]
+	}
+	return true
+}
+
+// escapeLike makes user text match only itself in a LIKE pattern that is used with
+// ESCAPE '\'. Ids routinely contain "_", which LIKE would treat as "any character".
+func escapeLike(s string) string {
+	return likeEscaper.Replace(s)
+}
+
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
