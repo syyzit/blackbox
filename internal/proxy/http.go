@@ -153,7 +153,14 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { h.rec.abandon(hint.scope, failure) }()
 
 	target := *h.upstream
-	target.Path = singleJoin(h.upstream.Path, r.URL.Path)
+	// Join the escaped forms: the decoded path turns %2F into a real slash, and the
+	// upstream would see a different path from the one the client sent.
+	target.RawPath = singleJoin(h.upstream.EscapedPath(), r.URL.EscapedPath())
+	if target.Path, err = url.PathUnescape(target.RawPath); err != nil {
+		failure = "request path: " + err.Error()
+		http.Error(w, "blackbox: "+failure, http.StatusBadRequest)
+		return
+	}
 	target.RawQuery = r.URL.RawQuery
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
