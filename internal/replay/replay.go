@@ -107,7 +107,8 @@ func (e *Engine) Divergences() []Divergence {
 	return append([]Divergence(nil), e.divergences...)
 }
 
-// LastUsed returns the exchange consumed by the most recent Respond call.
+// LastUsed returns the exchange consumed by the most recent Respond call, or nil when
+// that call consumed none.
 func (e *Engine) LastUsed() *Exchange {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -131,13 +132,19 @@ func (e *Engine) TakeNotifications() [][]byte {
 // is used, preferring an exact argument match. When nothing matches, a JSON-RPC error is
 // synthesized and recorded as a divergence rather than fabricated.
 func (e *Engine) Respond(line []byte) ([]byte, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// LastUsed describes this frame only. Left alone, a frame that consumes nothing
+	// (a notification, or a request with no recording) would be attributed to
+	// whichever call was answered before it.
+	e.last = nil
+	e.lastNotes = nil
+
 	msg, err := jsonrpc.Decode(line)
 	if err != nil || !msg.IsRequest() {
 		return nil, true
 	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	best := -1
 	if group := e.groupForLocked(msg); group != "" {
@@ -289,7 +296,7 @@ func ServeStdio(ctx context.Context, eng *Engine, o Options) error {
 			if x != nil {
 				callID = x.Request.CallID
 			}
-			rec.add(event.ClientToServer, frame, "", "", callID)
+			req := rec.add(event.ClientToServer, frame, "", "", callID)
 
 			if len(resp) > 0 {
 				if _, err := stdin.Write(append(resp, '\n')); err != nil {
@@ -298,7 +305,9 @@ func ServeStdio(ctx context.Context, eng *Engine, o Options) error {
 				if x != nil {
 					rec.add(event.ServerToClient, resp, x.Request.Method, x.Request.Tool, callID)
 				} else {
-					rec.add(event.ServerToClient, resp, "", "", callID)
+					// A synthesized error: it answers the agent's own request, so it
+					// is recorded under that request's method and tool.
+					rec.add(event.ServerToClient, resp, req.Method, req.Tool, callID)
 				}
 			}
 			for _, note := range eng.TakeNotifications() {

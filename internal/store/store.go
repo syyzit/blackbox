@@ -727,10 +727,21 @@ func resolveID(db *sql.DB, prefix string) (string, error) {
 	if prefix == "" {
 		return "", errors.New("store: empty session id")
 	}
+	// A complete id always names that session, even when longer ids start with it.
+	var exact string
+	switch err := db.QueryRow(`SELECT id FROM sessions WHERE id = ?`, prefix).Scan(&exact); {
+	case err == nil:
+		return exact, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", err
+	}
+
 	// A prefix may leave out the source prefix of an external session (oc-, cc-).
+	like := escapeLike(prefix) + "%"
 	rows, err := db.Query(
-		`SELECT id FROM sessions WHERE id = ? OR id LIKE ? OR id LIKE ? OR id LIKE ? LIMIT 4`,
-		prefix, prefix+"%", OpenCode.Prefix+prefix+"%", ClaudeCode.Prefix+prefix+"%")
+		`SELECT id FROM sessions
+		  WHERE id LIKE ? ESCAPE '\' OR id LIKE ? ESCAPE '\' OR id LIKE ? ESCAPE '\' LIMIT 2`,
+		like, escapeLike(OpenCode.Prefix)+like, escapeLike(ClaudeCode.Prefix)+like)
 	if err != nil {
 		return "", err
 	}
@@ -753,11 +764,6 @@ func resolveID(db *sql.DB, prefix string) (string, error) {
 	case 1:
 		return ids[0], nil
 	default:
-		for _, id := range ids {
-			if id == prefix {
-				return id, nil
-			}
-		}
 		return "", fmt.Errorf("store: session prefix %q is ambiguous", prefix)
 	}
 }

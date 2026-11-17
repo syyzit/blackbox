@@ -8,6 +8,7 @@ package coverage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -217,11 +218,14 @@ func Classify(root string, changes []Change, events []event.Event) Report {
 		}
 	}
 
+	// Decoded once, not once per changed file.
+	texts := append(callTexts(writeCalls), callTexts(shellCalls)...)
+
 	for _, ch := range changes {
 		abs := filepath.Join(root, ch.Path)
 		status := Unrecorded
 		switch {
-		case namesPath(writeCalls, ch.Path, abs) || namesPath(shellCalls, ch.Path, abs):
+		case namesPath(texts, ch.Path, abs):
 			status = Covered
 		case len(shellCalls) > 0:
 			status = Unverified
@@ -252,19 +256,61 @@ func Classify(root string, changes []Change, events []event.Event) Report {
 	return rep
 }
 
-func namesPath(calls []event.Event, rel, abs string) bool {
-	rel = filepath.ToSlash(rel)
-	for _, e := range calls {
-		for _, field := range []string{e.Args, e.Result, e.Raw} {
-			if field == "" {
-				continue
+// callTexts collects the text a path may be named in: each recorded field as it is,
+// and every string value inside the fields that are JSON.
+//
+// The values matter because a recorded path is a JSON string, in which a Windows path
+// has its backslashes doubled (C:\\repo\\a.txt) and never equals the real one. Both
+// kinds of slash are folded to "/" so that a path matches however the tool wrote it.
+func callTexts(calls []event.Event) []string {
+	var out []string
+	add := func(s string) {
+		if s != "" {
+			out = append(out, foldSlashes(s))
+		}
+	}
+	var walk func(v any)
+	walk = func(v any) {
+		switch v := v.(type) {
+		case string:
+			add(v)
+		case []any:
+			for _, item := range v {
+				walk(item)
 			}
-			if strings.Contains(field, rel) || strings.Contains(field, abs) {
-				return true
+		case map[string]any:
+			for _, item := range v {
+				walk(item)
 			}
 		}
 	}
+	for _, e := range calls {
+		for _, field := range []string{e.Args, e.Result, e.Raw} {
+			add(field)
+			var decoded any
+			if json.Unmarshal([]byte(field), &decoded) == nil {
+				// A bare JSON string is already covered by its value below.
+				walk(decoded)
+			}
+		}
+	}
+	return out
+}
+
+// namesPath reports whether any text from callTexts names the changed file, by its
+// path relative to the root or by its absolute path.
+func namesPath(texts []string, rel, abs string) bool {
+	rel, abs = foldSlashes(rel), foldSlashes(abs)
+	for _, text := range texts {
+		if strings.Contains(text, rel) || strings.Contains(text, abs) {
+			return true
+		}
+	}
 	return false
+}
+
+func foldSlashes(s string) string {
+	return strings.ReplaceAll(s, `\`, "/")
 }
 
 func isWriteTool(name string) bool {

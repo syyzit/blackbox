@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,24 +18,112 @@ import (
 )
 
 // hookMaxInput bounds the hook's stdin. A tool result can be large; anything over the
-// limit is reported and skipped rather than recorded half-parsed.
+// limit is reported and skipped rather than recorded half-parsed (see hookOversized).
 const hookMaxInput = 16 << 20
 
 // hookMaxField is the largest tool input or result recorded verbatim.
 const hookMaxField = 1 << 20
 
-// hookInput is the JSON Claude Code writes to a command hook's stdin. Only the fields
-// the adapter uses are listed; see https://code.claude.com/docs/en/hooks.
+// hookInput is what the adapter uses of the JSON Claude Code writes to a command
+// hook's stdin; see https://code.claude.com/docs/en/hooks.
 type hookInput struct {
-	SessionID    string          `json:"session_id"`
-	Event        string          `json:"hook_event_name"`
-	ToolName     string          `json:"tool_name"`
-	ToolInput    json.RawMessage `json:"tool_input"`
-	ToolResponse json.RawMessage `json:"tool_response"`
-	ToolUseID    string          `json:"tool_use_id"`
-	Error        string          `json:"error"`
-	DurationMS   int64           `json:"duration_ms"`
-	AgentType    string          `json:"agent_type"`
+	SessionID    string
+	Event        string
+	ToolName     string
+	ToolInput    json.RawMessage
+	ToolResponse json.RawMessage
+	ToolUseID    string
+	Error        string
+	DurationMS   int64
+	AgentType    string
+}
+
+// parseHookFields splits the envelope into its top-level fields without interpreting
+// them. Keys are matched exactly: decoding into a struct would match them without
+// regard to case, letting a stray "Hook_Event_Name" replace the real one.
+func parseHookFields(data []byte) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		return nil, errors.New("not a JSON object")
+	}
+	return fields, nil
+}
+
+// hookString reads a field the adapter cannot work without. Absent or null is "";
+// any other type is an error.
+func hookString(fields map[string]json.RawMessage, key string) (string, error) {
+	raw := fields[key]
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", fmt.Errorf("%s is not a string", key)
+	}
+	return s, nil
+}
+
+// hookInputFrom reads the fields beyond the three the decision depends on. They are
+// read leniently: the policy decision is made on PreToolUse, where an error exit lets
+// the tool run, so a surprise in a field used only for the record (a fractional
+// duration, an error that is an object) must not turn into "no decision".
+func hookInputFrom(fields map[string]json.RawMessage, event, session, tool string) hookInput {
+	return hookInput{
+		SessionID:    session,
+		Event:        event,
+		ToolName:     tool,
+		ToolInput:    fields["tool_input"],
+		ToolResponse: fields["tool_response"],
+		ToolUseID:    lenientText(fields["tool_use_id"], false),
+		Error:        lenientText(fields["error"], true),
+		DurationMS:   lenientMillis(fields["duration_ms"]),
+		AgentType:    lenientText(fields["agent_type"], false),
+	}
+}
+
+// lenientText is a string field's value, or a number's or boolean's text. An object
+// or array is its JSON text when structured is set (an error worth recording) and
+// empty otherwise (an id that is not an id).
+func lenientText(raw json.RawMessage, structured bool) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	if text[0] == '{' || text[0] == '[' {
+		if !structured {
+			return ""
+		}
+		return compactJSON(raw)
+	}
+	return text
+}
+
+// lenientMillis reads a duration written as any JSON number, or as a string holding
+// one, rounded to whole milliseconds. Anything else is 0, which means "unknown".
+func lenientMillis(raw json.RawMessage) int64 {
+	var f float64
+	if json.Unmarshal(raw, &f) != nil {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return 0
+		}
+		var err error
+		if f, err = strconv.ParseFloat(strings.TrimSpace(s), 64); err != nil {
+			return 0
+		}
+	}
+	// Also false for NaN, so the conversion below is always defined.
+	if !(f > 0 && f < float64(math.MaxInt64)) {
+		return 0
+	}
+	return int64(math.Round(f))
 }
 
 type hookOptions struct {
@@ -64,7 +156,7 @@ func cmdHook(args []string) int {
 // runHook handles one hook event.
 //
 // Exit codes follow Claude Code's contract: 0 with optional JSON on stdout, or 1 for an
-// error that must not block the tool. It never exits 2. A block is always a JSON
+// error that does not block the tool. It never exits 2. A block is always a JSON
 // "deny", so the reason reaches the model the same way on every platform.
 func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 	data, err := io.ReadAll(io.LimitReader(in, hookMaxInput+1))
@@ -73,24 +165,34 @@ func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 		return 1
 	}
 	if len(data) > hookMaxInput {
-		fmt.Fprintf(errw, "blackbox hook: input over %s, not recorded\n", humanBytes(hookMaxInput))
-		return 1
+		return hookOversized(data, out, errw, opts)
 	}
-	var h hookInput
-	if err := json.Unmarshal(data, &h); err != nil {
+	fields, err := parseHookFields(data)
+	if err != nil {
 		fmt.Fprintln(errw, "blackbox hook: invalid JSON:", err)
 		return 1
 	}
-
-	switch h.Event {
+	event, err := hookString(fields, "hook_event_name")
+	if err != nil {
+		fmt.Fprintln(errw, "blackbox hook:", err)
+		return 1
+	}
+	switch event {
 	case "PreToolUse", "PostToolUse", "PostToolUseFailure":
 	default:
 		return 0 // registered for an event this adapter has nothing to do with
 	}
-	if h.SessionID == "" || h.ToolName == "" {
+	session, sessionErr := hookString(fields, "session_id")
+	tool, toolErr := hookString(fields, "tool_name")
+	if err := errors.Join(sessionErr, toolErr); err != nil {
+		fmt.Fprintln(errw, "blackbox hook:", err)
+		return 1
+	}
+	if session == "" || tool == "" {
 		fmt.Fprintln(errw, "blackbox hook: session_id and tool_name are required")
 		return 1
 	}
+	h := hookInputFrom(fields, event, session, tool)
 	if strings.HasPrefix(h.ToolName, "mcp__") {
 		if h.Event != "PreToolUse" {
 			hookLinkMCPCall(h, errw, opts)
@@ -104,6 +206,95 @@ func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 		return hookBefore(h, out, opts)
 	}
 	return hookAfter(h, errw, opts)
+}
+
+// hookOversized handles input over the size limit, which is not parsed and so cannot
+// be checked against the policy or recorded.
+//
+// For a finished call that only costs the recording. For a call about to run it
+// would be a way past the policy: exit 1 lets the tool go ahead, so a large enough
+// input would skip every rule. When rules are being enforced, such a call is denied.
+func hookOversized(data []byte, out, errw io.Writer, opts hookOptions) int {
+	failOpen := func() int {
+		fmt.Fprintf(errw, "blackbox hook: input over %s, not recorded\n", humanBytes(hookMaxInput))
+		return 1
+	}
+
+	// What can be read of the envelope before the cut. The event may be missing if
+	// the oversized field came first; that is treated as a call about to run.
+	fields := hookPrefixFields(data)
+	event, _ := hookString(fields, "hook_event_name")
+	session, _ := hookString(fields, "session_id")
+	tool, _ := hookString(fields, "tool_name")
+	if event != "" && event != "PreToolUse" {
+		return failOpen()
+	}
+	if strings.HasPrefix(tool, "mcp__") && !opts.mcp {
+		return failOpen() // the proxy gates wrapped servers; see hookOptions.mcp
+	}
+
+	pol, err := loadPolicy(opts.home, opts.policyPath)
+	if err != nil {
+		return hookDecision(out, "deny", fmt.Sprintf(
+			"blackbox could not load its policy (%v). Fix or remove the file to continue.", err))
+	}
+	if !policyRestricts(pol) {
+		return failOpen()
+	}
+
+	reason := fmt.Sprintf("this call's input is too large for blackbox to check (over %s), "+
+		"and a policy is being enforced, so it was blocked. Retry with a smaller input.", humanBytes(hookMaxInput))
+	if session != "" && tool != "" {
+		if err := store.RecordExternalDecision(opts.home, store.ClaudeCode, session, policy.DecisionRecord{
+			Server: store.ClaudeCode.Name, Tool: tool, Args: `{"truncated":true}`,
+			CallID: lenientText(fields["tool_use_id"], false),
+			Action: policy.Deny, Mode: policy.ModeEnforce, Reason: reason,
+			At: time.Now().UTC(),
+		}); err != nil {
+			fmt.Fprintln(errw, "blackbox hook:", err)
+		}
+	}
+	return hookDecision(out, "deny", "blackbox policy: "+reason)
+}
+
+// hookPrefixFields returns the complete top-level fields at the start of a JSON
+// object that may be cut off part-way.
+func hookPrefixFields(data []byte) map[string]json.RawMessage {
+	fields := map[string]json.RawMessage{}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return fields
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			break
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			break
+		}
+		fields[key] = value
+	}
+	return fields
+}
+
+// policyRestricts reports whether a policy can block anything: it is enforced, and
+// its default or one of its rules is something other than allow.
+func policyRestricts(p *policy.Policy) bool {
+	if p == nil || p.Mode == policy.ModeShadow {
+		return false
+	}
+	if p.Default != policy.Allow {
+		return true
+	}
+	for _, rule := range p.Rules {
+		if rule.Action != policy.Allow {
+			return true
+		}
+	}
+	return false
 }
 
 // hookBefore applies the policy before a tool runs. An allowed call prints nothing, so

@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/pretty"
 	"github.com/tidwall/sjson"
+
+	"github.com/syyzit/blackbox/internal/mcpconfig"
 )
 
 // hookEvents are the Claude Code events the adapter registers for.
@@ -64,6 +65,12 @@ func cmdHookInstall(args []string) int {
 		return 1
 	}
 	existed := err == nil
+	if *remove && !existed {
+		// Nothing was installed here; creating a settings file to say so would be
+		// a change the user did not ask for.
+		fmt.Printf("%s does not exist; nothing to remove\n", path)
+		return 0
+	}
 
 	updated, err := editHookSettings(original, bin, hookArgs, *remove)
 	if err != nil {
@@ -88,14 +95,14 @@ func cmdHookInstall(args []string) int {
 		if info, err := os.Stat(path); err == nil {
 			mode = info.Mode().Perm()
 		}
-		backup := path + ".blackbox-backup-" + time.Now().Format("20060102-150405")
-		if err := os.WriteFile(backup, original, mode); err != nil {
+		backup, err := mcpconfig.Backup(path, original, mode)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "blackbox hook install: backup %s: %v\n", path, err)
 			return 1
 		}
 		fmt.Printf("backup %s\n", backup)
 	}
-	if err := os.WriteFile(path, updated, mode); err != nil {
+	if err := mcpconfig.WriteFileAtomic(path, updated, mode); err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox hook install:", err)
 		return 1
 	}

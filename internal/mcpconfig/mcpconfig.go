@@ -6,6 +6,7 @@ package mcpconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,6 +106,10 @@ type Server struct {
 	Remote  bool
 	Wrapped bool
 	Type    string
+
+	// raw holds the command's elements as they appear in the file, so a rewrite can
+	// put back one that is not a string (a port written as a number) unchanged.
+	raw []json.RawMessage
 }
 
 // Config is one editable config file.
@@ -178,46 +183,68 @@ func (c *Config) Servers() ([]Server, error) {
 
 	out := make([]Server, 0, len(names))
 	for _, name := range names {
-		var entry struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
-			URL     string   `json:"url"`
-			Type    string   `json:"type"`
-		}
-		_ = json.Unmarshal(entries[name], &entry)
+		// Fields are read one by one: a surprise in one of them must not hide the
+		// others, as decoding the whole entry into a struct would.
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(entries[name], &fields)
+		var url, typ string
+		_ = json.Unmarshal(fields["url"], &url)
+		_ = json.Unmarshal(fields["type"], &typ)
 
-		var cmd []string
+		var raw []json.RawMessage
 		if c.Style == StyleOpenCode {
-			var arrayEntry struct {
-				Command []string `json:"command"`
-				URL     string   `json:"url"`
-				Type    string   `json:"type"`
+			_ = json.Unmarshal(fields["command"], &raw)
+		} else {
+			var command string
+			if json.Unmarshal(fields["command"], &command) == nil && command != "" {
+				var args []json.RawMessage
+				_ = json.Unmarshal(fields["args"], &args)
+				raw = append([]json.RawMessage{fields["command"]}, args...)
 			}
-			_ = json.Unmarshal(entries[name], &arrayEntry)
-			cmd = arrayEntry.Command
-			entry.URL = arrayEntry.URL
-			entry.Type = arrayEntry.Type
-		} else if entry.Command != "" {
-			cmd = append([]string{entry.Command}, entry.Args...)
+		}
+		cmd := make([]string, 0, len(raw))
+		for _, element := range raw {
+			cmd = append(cmd, displayArg(element))
+		}
+		if len(cmd) == 0 {
+			cmd = nil
 		}
 
-		remote := entry.URL != "" || entry.Type == "remote" || entry.Type == "sse" || entry.Type == "http"
+		remote := url != "" || typ == "remote" || typ == "sse" || typ == "http"
 		out = append(out, Server{
 			Name:    name,
 			Command: cmd,
 			Remote:  remote,
 			Wrapped: isWrapped(cmd),
-			Type:    entry.Type,
+			Type:    typ,
+			raw:     raw,
 		})
 	}
 	return out, nil
 }
 
+// displayArg is a command element as text: a string's value, anything else as written.
+func displayArg(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// isWrapped reports whether a command already runs through Black Box.
+//
+// The binary is compared by name alone, without regard to case, directory or a .exe
+// suffix: init writes the path of the running executable, which on Windows is
+// C:\...\blackbox.exe. Backslashes are split by hand because filepath.Base only
+// knows the separator of the OS it runs on, and a config can be read on another.
 func isWrapped(cmd []string) bool {
-	if len(cmd) < 3 {
+	if len(cmd) < 3 || cmd[1] != "run" || cmd[2] != "--" {
 		return false
 	}
-	return filepath.Base(cmd[0]) == "blackbox" && cmd[1] == "run" && cmd[2] == "--"
+	name := strings.ReplaceAll(cmd[0], `\`, "/")
+	name = strings.ToLower(name[strings.LastIndex(name, "/")+1:])
+	return strings.TrimSuffix(name, ".exe") == "blackbox"
 }
 
 // Wrap rewrites one server entry to run through Black Box.
@@ -258,22 +285,61 @@ func (c *Config) WrapWith(name, command string) (string, string, error) {
 	old := append([]string(nil), target.Command...)
 	next := append([]string{"run", "--"}, old...)
 
+	// The new command is assembled from the original elements as written, so a
+	// non-string argument, or a string escaped the user's way, comes through intact.
+	elements := []string{`"run"`, `"--"`}
+	for _, element := range target.raw {
+		elements = append(elements, strings.TrimSpace(string(element)))
+	}
+	quoted, err := json.Marshal(command)
+	if err != nil {
+		return "", "", err
+	}
+
 	var bytes []byte
 	if c.Style == StyleOpenCode {
-		bytes, err = sjson.SetBytes(c.raw, c.path(name, "command"), append([]string{command}, next...))
+		elements = append([]string{string(quoted)}, elements...)
+		bytes, err = sjson.SetRawBytes(c.raw, c.path(name, "command"), []byte("["+strings.Join(elements, ",")+"]"))
 	} else {
-		bytes, err = sjson.SetBytes(c.raw, c.path(name, "command"), command)
+		bytes, err = sjson.SetRawBytes(c.raw, c.path(name, "command"), quoted)
 		if err == nil {
-			bytes, err = sjson.SetBytes(bytes, c.path(name, "args"), next)
+			bytes, err = sjson.SetRawBytes(bytes, c.path(name, "args"), []byte("["+strings.Join(elements, ",")+"]"))
 		}
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("rewrite %s: %w", c.Path, err)
 	}
+	// Check the edit did what was asked before reporting success: a name the path
+	// syntax misreads would otherwise add a stray entry or change nothing.
+	if err := c.verifyWrap(bytes, servers, name, append([]string{command}, next...)); err != nil {
+		return "", "", err
+	}
 
 	c.raw = bytes
 	c.changed = true
 	return strings.Join(old, " "), command + " " + strings.Join(next, " "), nil
+}
+
+// verifyWrap confirms that edited holds the same servers as before, with only the
+// named one changed, and that one running want.
+func (c *Config) verifyWrap(edited []byte, before []Server, name string, want []string) error {
+	fail := func() error {
+		return fmt.Errorf("server %q in %s could not be rewritten safely; edit it by hand", name, c.Path)
+	}
+	after, err := (&Config{Path: c.Path, Style: c.Style, raw: edited}).Servers()
+	if err != nil || len(after) != len(before) {
+		return fail()
+	}
+	for i := range after {
+		expect := before[i].Command
+		if before[i].Name == name {
+			expect = want
+		}
+		if after[i].Name != before[i].Name || strings.Join(after[i].Command, "\x00") != strings.Join(expect, "\x00") {
+			return fail()
+		}
+	}
+	return nil
 }
 
 // Bytes returns the current (possibly edited) file contents.
@@ -288,11 +354,11 @@ func (c *Config) Write() (string, error) {
 	if info, err := os.Stat(c.Path); err == nil {
 		mode = info.Mode().Perm()
 	}
-	backup := c.Path + ".blackbox-backup-" + time.Now().Format("20060102-150405")
-	if err := os.WriteFile(backup, c.original, mode); err != nil {
+	backup, err := Backup(c.Path, c.original, mode)
+	if err != nil {
 		return "", fmt.Errorf("backup %s: %w", c.Path, err)
 	}
-	if err := os.WriteFile(c.Path, c.raw, mode); err != nil {
+	if err := WriteFileAtomic(c.Path, c.raw, mode); err != nil {
 		return "", fmt.Errorf("write %s: %w", c.Path, err)
 	}
 	c.original = append([]byte(nil), c.raw...)
@@ -300,11 +366,87 @@ func (c *Config) Write() (string, error) {
 	return backup, nil
 }
 
+// Backup saves a config's previous contents beside it and returns the backup's path.
+//
+// The name carries the time to the second. It never replaces an existing file: two
+// edits within one second would otherwise overwrite the only copy of the file as the
+// user wrote it. A numeric suffix is added until the name is free.
+func Backup(path string, original []byte, mode os.FileMode) (string, error) {
+	base := path + ".blackbox-backup-" + time.Now().Format("20060102-150405")
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s-%d", base, n)
+		}
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, err = f.Write(original)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(name)
+			return "", err
+		}
+		return name, nil
+	}
+}
+
+// WriteFileAtomic replaces a file's contents by writing a temporary file in the same
+// directory and renaming it over the original, so a crash or a full disk part-way
+// leaves the old config intact instead of a truncated one an agent cannot start with.
+//
+// A config that is a symbolic link (a dotfiles checkout, say) stays a link: the file
+// it points to is the one replaced.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".blackbox-tmp-*")
+	if err != nil {
+		return err
+	}
+	_, err = tmp.Write(data)
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		// CreateTemp makes the file private; give it the mode the config had.
+		err = os.Chmod(tmp.Name(), mode)
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
+}
+
 func (c *Config) path(name, field string) string {
 	return c.Style.Key() + "." + escapeKey(name) + "." + field
 }
 
+// escapeKey makes a server name a literal key in an sjson path. sjson and the gjson
+// lookups behind it give meaning to many characters (".", "*", "?", "|", "#", "@",
+// "!", a leading ":", ...), and both take a backslash before any character to mean
+// that character itself, so everything outside a plainly safe set is escaped rather
+// than chasing the list.
 func escapeKey(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `.`, `\.`, `*`, `\*`, `?`, `\?`)
-	return r.Replace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		safe := ch >= 0x80 || ch == '_' ||
+			(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+		if !safe {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
 }

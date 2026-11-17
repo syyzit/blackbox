@@ -22,10 +22,14 @@ type call struct {
 }
 
 func calls(events []event.Event) []call {
+	// JSON-RPC ids and call ids are unique per MCP connection only. A merged trace
+	// holds several sessions that each count from 1, so both are scoped by session.
+	scoped := func(e event.Event, id string) string { return e.SessionID + "\x00" + id }
+
 	results := map[string]string{}
 	for _, e := range events {
 		if e.Direction == event.ServerToClient && e.ID != "" {
-			results[e.ID] = e.Result
+			results[scoped(e, e.ID)] = e.Result
 		}
 	}
 
@@ -41,10 +45,11 @@ func calls(events []event.Event) []call {
 		if group == "" {
 			group = "rpc-" + e.ID
 		}
+		group = scoped(e, group)
 		c := call{
 			ev:     e,
 			key:    e.Method + "\x00" + e.Tool + "\x00" + diffable(e.Args),
-			result: results[e.ID],
+			result: results[scoped(e, e.ID)],
 		}
 		if i, ok := position[group]; ok {
 			out[i] = c
@@ -100,14 +105,17 @@ func Diff(a, b []event.Event) Report {
 		}
 	}
 
-	keysB := make(map[string]bool, m)
-	for _, c := range cb {
-		keysB[c.key] = true
+	// An unmatched call in A is "reordered" only while B still has an unmatched call
+	// with the same key to pair it with. Counting matters: a set would pair every
+	// repeat with one occurrence, and a call made once in A and twice in B would
+	// compare as identical.
+	spareB := make(map[string]int, m)
+	for j, c := range cb {
+		if !matchedB[j] {
+			spareB[c.key]++
+		}
 	}
-	keysA := make(map[string]bool, n)
-	for _, c := range ca {
-		keysA[c.key] = true
-	}
+	reordered := make(map[string]int)
 
 	for i, c := range ca {
 		if matchedA[i] {
@@ -115,7 +123,9 @@ func Diff(a, b []event.Event) Report {
 		}
 		kind := "missing"
 		detail := "call was not made in run B"
-		if keysB[c.key] {
+		if spareB[c.key] > 0 {
+			spareB[c.key]--
+			reordered[c.key]++
 			kind = "reordered"
 			detail = "same call, different position"
 		}
@@ -124,7 +134,12 @@ func Diff(a, b []event.Event) Report {
 		})
 	}
 	for j, c := range cb {
-		if matchedB[j] || keysA[c.key] {
+		if matchedB[j] {
+			continue
+		}
+		// Already reported from A's side as reordered.
+		if reordered[c.key] > 0 {
+			reordered[c.key]--
 			continue
 		}
 		rep.Changes = append(rep.Changes, Divergence{

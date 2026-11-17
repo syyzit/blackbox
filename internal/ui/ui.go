@@ -8,8 +8,10 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -152,9 +154,12 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if !allowWrite(w, r) {
+		return
+	}
+
 	var body struct {
 		Decision string `json:"decision"`
-		By       string `json:"by"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
@@ -170,11 +175,9 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "decision must be allow or deny")
 		return
 	}
-	by := body.By
-	if by == "" {
-		by = "ui"
-	}
-	if err := store.DecideApproval(s.Home, id, approved, by); err != nil {
+	// Who decided is a fact about this endpoint, not something the caller may claim:
+	// a request body naming "terminal" would otherwise forge the audit trail.
+	if err := store.DecideApproval(s.Home, id, approved, "ui"); err != nil {
 		if errors.Is(err, store.ErrAlreadyDecided) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -183,6 +186,41 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "id": id, "approved": approved})
+}
+
+// allowWrite reports whether a state-changing request may proceed, and writes the
+// refusal when it may not. The UI listens on loopback without authentication, so any
+// page the user has open can address it; the browser's same-origin policy only stops
+// that page from reading the reply, not from sending the request. Three independent
+// checks keep such a request from changing anything:
+//
+//   - the body must be declared as JSON, which a cross-origin page cannot do without
+//     a CORS preflight, and this server never answers one;
+//   - Sec-Fetch-Site, where the browser sends it, must not name another site or
+//     another origin of this one (a different port on localhost is "same-site");
+//   - an Origin header, where present, must name the host the request was sent to.
+//
+// Clients that are not browsers send neither header and are unaffected.
+func allowWrite(w http.ResponseWriter, r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return false
+	}
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+	default:
+		writeError(w, http.StatusForbidden, "cross-site request refused")
+		return false
+	}
+	for _, origin := range r.Header.Values("Origin") {
+		u, err := url.Parse(origin)
+		if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) {
+			writeError(w, http.StatusForbidden, "cross-origin request refused")
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {
