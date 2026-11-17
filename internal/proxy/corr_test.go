@@ -51,6 +51,26 @@ func TestResponseIDMustMatchRequestIDExactly(t *testing.T) {
 	}
 }
 
+// A server-initiated request and the client's reply pair under the session-scoped key,
+// for stdio (no session) and HTTP alike, and whatever the id's type.
+func TestServerRequestPairsWithReply(t *testing.T) {
+	for _, id := range []string{`99`, `"r-1"`} {
+		for _, session := range []string{"", "sess-a"} {
+			sink := &corrSink{}
+			p := newPipeline(pipelineConfig{SessionID: "s", Sink: sink})
+			hint := routeHint{session: session}
+			p.record(event.ServerToClient, []byte(`{"jsonrpc":"2.0","id":`+id+`,"method":"roots/list"}`), hint, nil, false)
+			p.record(event.ClientToServer, []byte(`{"jsonrpc":"2.0","id":`+id+`,"result":{"roots":[]}}`), hint, nil, false)
+			if reply := sink.events[1]; reply.Method != "roots/list" || reply.Status != event.StatusOK {
+				t.Errorf("id %s, session %q: reply not paired: %+v", id, session, reply)
+			}
+			if len(p.serverPending) != 0 {
+				t.Errorf("id %s, session %q: server request left pending", id, session)
+			}
+		}
+	}
+}
+
 // Servers re-encode ids: Python's json.dumps escapes non-ASCII, some encoders escape
 // "/". The same string spelled differently is the same id; a number is never a string.
 func TestResponseIDMatchesByTypeAndValue(t *testing.T) {
