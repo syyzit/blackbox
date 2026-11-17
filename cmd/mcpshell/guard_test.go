@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,6 +48,44 @@ func TestCheckArgsBlocksFindActions(t *testing.T) {
 	}
 	if err := checkArgs(root, root, "find", []string{".", "-name", "*.go"}); err != nil {
 		t.Errorf("plain find rejected: %v", err)
+	}
+}
+
+// rg can run a program per file (--pre) or to find the host name (--hostname-bin), and
+// reads extra arguments from the file RIPGREP_CONFIG_PATH names, which could say the
+// same. The guard is checked directly: rg need not be installed to test it.
+func TestRgCannotRunPrograms(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--pre", "./x", "needle"},
+		{"--pre=./x", "needle"},
+		{"needle", ".", "--pre", "x"},
+		{"--hostname-bin", "./x", "needle"},
+		{"--hostname-bin=./x", "needle"},
+	} {
+		if err := checkArgs(root, root, "rg", args); err == nil {
+			t.Errorf("rg %v was allowed", args)
+		}
+	}
+	for _, args := range [][]string{
+		{"needle"},
+		{"-n", "--pre-glob", "*.pdf", "needle"}, // only says which files --pre would see
+		{"--pretty", "needle"},
+	} {
+		if err := checkArgs(root, root, "rg", args); err != nil {
+			t.Errorf("rg %v rejected: %v", args, err)
+		}
+	}
+
+	t.Setenv("RIPGREP_CONFIG_PATH", filepath.Join(root, "rgconfig"))
+	env := commandEnv("rg")
+	if env == nil {
+		env = os.Environ() // nil runs the command with mcpshell's own environment
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(strings.ToUpper(kv), "RIPGREP_CONFIG_PATH=") {
+			t.Fatalf("rg would read %s", kv)
+		}
 	}
 }
 

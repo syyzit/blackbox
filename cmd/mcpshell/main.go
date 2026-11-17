@@ -11,7 +11,8 @@
 //     when the repository's own config defines a filter, diff driver or signature
 //     program
 //   - the working directory and any path argument must resolve inside the root
-//   - find cannot run programs or delete files
+//   - find cannot run programs or delete files, and rg cannot run programs (--pre,
+//     --hostname-bin) or read a config file
 //   - a timeout and an output cap; the timeout holds even when the command leaves
 //     children behind, though those are not killed
 //
@@ -214,18 +215,16 @@ func (s *server) execute(a callArgs) (string, bool) {
 	defer cancel()
 
 	argv := a.Args
-	var env []string
 	if a.Command == "git" {
 		if err := checkGitConfig(ctx, dir, a.Args[0]); err != nil {
 			return err.Error(), true
 		}
 		argv = append(gitPrefix(a.Args[0]), a.Args[1:]...)
-		env = gitEnv()
 	}
 
 	cmd := exec.CommandContext(ctx, a.Command, argv...)
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = commandEnv(a.Command)
 	// Killing the command does not kill what it started (go run, make), and a child
 	// that inherited the output pipe would keep the read below waiting until it
 	// exits. WaitDelay gives up on the pipe instead.

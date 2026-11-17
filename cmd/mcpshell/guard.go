@@ -34,6 +34,27 @@ func checkArgs(root, dir, command string, args []string) error {
 		}
 	case "git":
 		return checkGit(args)
+	case "rg":
+		return checkRg(args)
+	}
+	return nil
+}
+
+// rgPrograms are ripgrep options that run a program: --pre for every file searched,
+// --hostname-bin to name the host in hyperlinks. ripgrep does not accept abbreviated
+// long options, so exact names suffice. They are refused anywhere in the arguments,
+// even after "--": telling an option's value from an option would take rg's parser,
+// and refusing a search for the literal text "--pre" costs little.
+var rgPrograms = []string{"--pre", "--hostname-bin"}
+
+func checkRg(args []string) error {
+	for _, a := range args {
+		name, _, _ := strings.Cut(a, "=")
+		for _, opt := range rgPrograms {
+			if name == opt {
+				return fmt.Errorf("rg %s is not allowed: it runs an external program", opt)
+			}
+		}
 	}
 	return nil
 }
@@ -153,6 +174,31 @@ func gitSafeConfig() []string {
 		"-c", "core.hooksPath=" + os.DevNull,
 		"-c", "log.showSignature=false",
 	}
+}
+
+// commandEnv is the environment a command runs with; nil means mcpshell's own.
+func commandEnv(command string) []string {
+	switch command {
+	case "git":
+		return gitEnv()
+	case "rg":
+		// rg reads extra arguments from the file this names, which could hold --pre
+		// and would never pass through checkRg.
+		return withoutEnv(os.Environ(), "RIPGREP_CONFIG_PATH")
+	}
+	return nil
+}
+
+// withoutEnv drops a variable, matching its name without regard to case as Windows
+// does.
+func withoutEnv(env []string, name string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // gitEnv keeps git from rewriting the index as a side effect of reading it.
