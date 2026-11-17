@@ -45,8 +45,12 @@ func cmdPolicy(args []string) int {
 	sum := simulatePolicy(pol, meta, events)
 	fmt.Printf("session  %s\n", meta.ID)
 	fmt.Printf("calls    %d\n", sum.Total)
-	fmt.Printf("result   allow %d · deny %d · require approval %d\n\n",
+	fmt.Printf("result   allow %d · deny %d · require approval %d\n",
 		sum.Allow, sum.Deny, sum.Approval)
+	if note := redactionNote(pol, sum); note != "" {
+		fmt.Printf("note     %s\n", note)
+	}
+	fmt.Println()
 
 	var blocked []policy.Impact
 	for _, im := range sum.Impacts {
@@ -74,6 +78,35 @@ func cmdPolicy(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// redactionNote says when the simulation may differ from what the live gate decided:
+// the recorded arguments are redacted (the unredacted value is deliberately not
+// stored), and a rule that reads arguments saw the marker where the live gate saw the
+// secret. It is empty when no call was redacted or no rule reads arguments.
+func redactionNote(pol *policy.Policy, sum policy.ImpactSummary) string {
+	readsArgs := false
+	for _, r := range pol.Rules {
+		if r.Args != "" || len(r.Match) > 0 || len(r.Paths) > 0 {
+			readsArgs = true
+			break
+		}
+	}
+	redacted := 0
+	for _, im := range sum.Impacts {
+		if strings.Contains(im.Args, "[REDACTED") {
+			redacted++
+		}
+	}
+	if !readsArgs || redacted == 0 {
+		return ""
+	}
+	calls := "calls have"
+	if redacted == 1 {
+		calls = "call has"
+	}
+	return fmt.Sprintf("%d %s redacted arguments; args, match and paths rules saw the marker, not the value, and may decide differently live",
+		redacted, calls)
 }
 
 // simulatePolicy evaluates a recorded session the way the live gate saw it. A proxied
