@@ -121,6 +121,11 @@ afterwards.
   Code's own permission prompt; if the call then runs, the audit row is marked approved.
   An allowed call is passed through silently, so your Claude Code permission rules still
   apply: the policy can tighten them, never loosen them.
+- **Tool names** are Claude Code's own. Shell commands arrive as `Bash` or, on Windows,
+  as `PowerShell`, both with the command in `command`, so a rule about shell commands
+  should name both: `{"server": "claude-code", "tool": "*", "match": {"command": "*git push*"}, ...}`
+  covers either. Run in shadow mode first and read `blackbox decisions` to see the
+  names your sessions actually use.
 - **MCP tools** are skipped by default, since a wrapped server is already recorded by
   the proxy. Add `-mcp` to cover servers you have not wrapped.
 - **Failure behaviour.** A recording error never blocks a tool. A `policy.json` or
