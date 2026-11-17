@@ -13,6 +13,7 @@ import (
 )
 
 type checkPayload struct {
+	Source    string          `json:"source"`
 	SessionID string          `json:"sessionId"`
 	CallID    string          `json:"callId"`
 	Tool      string          `json:"tool"`
@@ -47,25 +48,15 @@ func cmdCheck(args []string) int {
 		return 1
 	}
 
-	pol, red, err := loadConfig(*home, *policyPath)
+	src, ok := store.SourceByName(p.Source)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "blackbox: check: unknown source %q\n", p.Source)
+		return 1
+	}
+	dec, err := decideExternalCall(*home, *policyPath, src, p)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
-	}
-	rawArgs := compactJSON(p.Input)
-	dec := pol.Decide(policy.Request{Server: "opencode", Tool: p.Tool, Args: rawArgs, Arguments: p.Input})
-
-	auditText := red.String(rawArgs)
-	if len(auditText) > 4096 {
-		auditText = auditText[:4096] + "…"
-	}
-	if err := store.RecordExternalDecision(*home, p.SessionID, policy.DecisionRecord{
-		Server: "opencode", Tool: p.Tool, Args: auditText, CallID: p.CallID,
-		Action: dec.Action, Mode: dec.Mode, Reason: dec.Reason,
-		At: time.Now().UTC(),
-	}); err != nil {
-		// A decision that cannot be recorded must not break the tool call.
-		fmt.Fprintf(os.Stderr, "blackbox: check: %v\n", err)
 	}
 
 	if dec.Mode == policy.ModeShadow {
@@ -81,4 +72,30 @@ func cmdCheck(args []string) int {
 	default:
 		return 0
 	}
+}
+
+// decideExternalCall evaluates the policy for a call made outside the MCP proxy and
+// records the decision. The source's name is the server that policy rules match. An
+// error means the policy or redaction rules could not be loaded.
+func decideExternalCall(home, policyPath string, src store.Source, p checkPayload) (policy.Decision, error) {
+	pol, red, err := loadConfig(home, policyPath)
+	if err != nil {
+		return policy.Decision{}, err
+	}
+	rawArgs := compactJSON(p.Input)
+	dec := pol.Decide(policy.Request{Server: src.Name, Tool: p.Tool, Args: rawArgs, Arguments: p.Input})
+
+	auditText := red.String(rawArgs)
+	if len(auditText) > 4096 {
+		auditText = auditText[:4096] + "…"
+	}
+	if err := store.RecordExternalDecision(home, src, p.SessionID, policy.DecisionRecord{
+		Server: src.Name, Tool: p.Tool, Args: auditText, CallID: p.CallID,
+		Action: dec.Action, Mode: dec.Mode, Reason: dec.Reason,
+		At: time.Now().UTC(),
+	}); err != nil {
+		// A decision that cannot be recorded must not break the tool call.
+		fmt.Fprintf(os.Stderr, "blackbox: check: %v\n", err)
+	}
+	return dec, nil
 }

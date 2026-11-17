@@ -236,7 +236,7 @@ func TestTraceAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.AppendExternal(home, "ses_ui", []string{"opencode", "builtins"}, []event.Event{{
+	if err := store.AppendExternal(home, store.OpenCode, "ses_ui", []event.Event{{
 		Direction: event.ClientToServer, Method: "tools/call", Tool: "shell",
 		Status: event.StatusPending, At: now.Add(time.Second), Raw: `{}`,
 	}}); err != nil {

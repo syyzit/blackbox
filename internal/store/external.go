@@ -30,7 +30,9 @@ func ExternalID(prefix, id string) string {
 
 // AppendExternal appends events recorded outside the MCP proxy to a session keyed by
 // an external id. The session is created on first use.
-func AppendExternal(home, sessionID string, argv []string, events []event.Event) error {
+//
+// src says which agent the events came from; it sets the session id prefix and label.
+func AppendExternal(home string, src Source, sessionID string, events []event.Event) error {
 	home = Home(home)
 	if err := ensureHome(home); err != nil {
 		return err
@@ -41,7 +43,7 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 	}
 	defer db.Close()
 
-	id := ExternalID("oc-", sessionID)
+	id := ExternalID(src.Prefix, sessionID)
 	now := time.Now().UTC()
 	startedAt := now
 	for _, e := range events {
@@ -50,7 +52,7 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 		}
 	}
 
-	if err := ensureExternalSession(db, id, argv, startedAt); err != nil {
+	if err := ensureExternalSession(db, id, src.argv(), startedAt); err != nil {
 		return err
 	}
 
@@ -83,7 +85,7 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 
 // RecordExternalDecision records a policy decision for an external session, creating
 // the session row if this is the first thing the plugin reports.
-func RecordExternalDecision(home, sessionID string, d policy.DecisionRecord) error {
+func RecordExternalDecision(home string, src Source, sessionID string, d policy.DecisionRecord) error {
 	home = Home(home)
 	if err := ensureHome(home); err != nil {
 		return err
@@ -94,8 +96,8 @@ func RecordExternalDecision(home, sessionID string, d policy.DecisionRecord) err
 	}
 	defer db.Close()
 
-	id := ExternalID("oc-", sessionID)
-	if err := ensureExternalSession(db, id, []string{"opencode", "builtins"}, time.Now().UTC()); err != nil {
+	id := ExternalID(src.Prefix, sessionID)
+	if err := ensureExternalSession(db, id, src.argv(), time.Now().UTC()); err != nil {
 		return err
 	}
 	return insertDecision(db, id, d)

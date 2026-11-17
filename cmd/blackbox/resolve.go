@@ -17,6 +17,7 @@ func cmdResolve(args []string) int {
 	call := fs.String("call", "", "tool call id")
 	decision := fs.String("decision", "", "allow or deny")
 	note := fs.String("note", "", "text appended to the decision reason")
+	source := fs.String("source", "", "agent the session belongs to: opencode (default) or claude-code")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -43,7 +44,12 @@ func cmdResolve(args []string) int {
 		return 2
 	}
 
-	if err := store.ResolveDecision(*home, *session, *call, approved, *note); err != nil {
+	src, ok := store.SourceByName(*source)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "blackbox resolve: unknown source %q\n", *source)
+		return 2
+	}
+	if err := store.ResolveDecision(*home, src, *session, *call, approved, *note); err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
 	}
