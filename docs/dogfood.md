@@ -53,9 +53,14 @@ It is deliberately narrow:
 - **No shell.** Programs run via `exec`, so pipes, `&&`, and redirection are not
   interpreted; arguments are passed literally.
 - **Allowlist.** `go`, `git`, `make`, and a few read-only utilities. Git is limited to
-  read-only subcommands (`status`, `diff`, `log`, `show`, ...).
+  read-only subcommands (`status`, `diff`, `log`, `show`, ...), without `--help` or
+  `--show-signature`, and with hooks, fsmonitor, external diff and textconv switched
+  off. If the repository's own config (`.git/config` or a file it includes) defines a
+  filter, a diff driver or `gpg.program`, git is refused until that is removed: those
+  name programs git would run. Your user-level config (git-lfs, for example) is fine.
 - **Rooted.** A `cwd` must resolve inside `--root`.
-- **Bounded.** Default 30s timeout and a 64KB output cap.
+- **Bounded.** Default 30s timeout and a 64KB output cap. A command that outlives its
+  timeout is killed and reported as timed out; processes it started are not killed.
 
 Build it with `make build`; `install.sh` installs only the main binary.
 

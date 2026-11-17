@@ -7,10 +7,13 @@
 // Security model:
 //   - no shell: arguments are passed literally, so pipes and redirection do nothing
 //   - an allowlist of programs, plus read-only forms of a few git subcommands, with
-//     repository-configured diff drivers, textconv and fsmonitor switched off
+//     fsmonitor, hooks, external diff and textconv switched off, and refused outright
+//     when the repository's own config defines a filter, diff driver or signature
+//     program
 //   - the working directory and any path argument must resolve inside the root
 //   - find cannot run programs or delete files
-//   - a timeout and an output cap
+//   - a timeout and an output cap; the timeout holds even when the command leaves
+//     children behind, though those are not killed
 //
 // It is not a sandbox: go and make build and run code from the repository by design.
 package main
@@ -33,6 +36,10 @@ import (
 )
 
 const version = "0.1.0"
+
+// waitDelay is how long a killed command's output is waited for before the pipe is
+// abandoned to whatever child still holds it.
+const waitDelay = 2 * time.Second
 
 func main() {
 	root := flag.String("root", "", "directory commands are confined to (default: cwd)")
@@ -194,10 +201,6 @@ func (s *server) execute(a callArgs) (string, bool) {
 	if err := checkArgs(s.root, dir, a.Command, a.Args); err != nil {
 		return err.Error(), true
 	}
-	argv := a.Args
-	if a.Command == "git" {
-		argv = append(gitPrefix(a.Args[0]), a.Args[1:]...)
-	}
 
 	timeout := time.Duration(a.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
@@ -210,8 +213,23 @@ func (s *server) execute(a callArgs) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	argv := a.Args
+	var env []string
+	if a.Command == "git" {
+		if err := checkGitConfig(ctx, dir, a.Args[0]); err != nil {
+			return err.Error(), true
+		}
+		argv = append(gitPrefix(a.Args[0]), a.Args[1:]...)
+		env = gitEnv()
+	}
+
 	cmd := exec.CommandContext(ctx, a.Command, argv...)
 	cmd.Dir = dir
+	cmd.Env = env
+	// Killing the command does not kill what it started (go run, make), and a child
+	// that inherited the output pipe would keep the read below waiting until it
+	// exits. WaitDelay gives up on the pipe instead.
+	cmd.WaitDelay = waitDelay
 	out, runErr := cmd.CombinedOutput()
 
 	text := string(out)
@@ -223,11 +241,12 @@ func (s *server) execute(a callArgs) (string, bool) {
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		switch {
-		case errors.As(runErr, &exitErr):
-			code = exitErr.ExitCode()
+		// First: a command killed at the deadline also reports an exit status.
 		case ctx.Err() == context.DeadlineExceeded:
 			code = -1
-			text += "\ncommand timed out"
+			text += fmt.Sprintf("\ncommand timed out after %s", timeout)
+		case errors.As(runErr, &exitErr):
+			code = exitErr.ExitCode()
 		default:
 			code = -1
 			text += "\n" + runErr.Error()
