@@ -51,7 +51,7 @@ func (p *pipeline) oversize(dst io.Writer, br *bufio.Reader, dir event.Direction
 		p.recordOversize(dir, head, total, dec)
 		if p.agentOut != nil {
 			resp := syntheticError(nil, reason)
-			if err := p.write(p.agentOut, append(resp, '\n')); err != nil {
+			if err := p.write(p.agentOut, append(resp, '\n'), true); err != nil {
 				return err
 			}
 			p.record(event.ServerToClient, resp, routeHint{}, dec, true)
@@ -59,8 +59,10 @@ func (p *pipeline) oversize(dst io.Writer, br *bufio.Reader, dir event.Direction
 		return readErr
 	}
 
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+	if dir == event.ServerToClient {
+		p.writeMu.Lock()
+		defer p.writeMu.Unlock()
+	}
 	if _, err := dst.Write(head); err != nil {
 		return err
 	}
