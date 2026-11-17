@@ -7,13 +7,8 @@ import (
 
 func feed(stream []byte) [][]byte {
 	var p sseParser
-	var out [][]byte
-	for _, l := range bytes.SplitAfter(stream, []byte("\n")) {
-		if payload, ok := p.line(l); ok {
-			out = append(out, payload)
-		}
-	}
-	if payload, ok := p.flush(); ok {
+	out := p.consume(stream)
+	if payload, ok := p.end(); ok {
 		out = append(out, payload)
 	}
 	return out
