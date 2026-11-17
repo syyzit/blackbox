@@ -252,7 +252,7 @@ func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error
 					p.record(dir, line, routeHint{}, dec, false)
 					if len(resp) > 0 {
 						if p.agentOut != nil {
-							if err := p.write(p.agentOut, append(resp, '\n')); err != nil {
+							if err := p.write(p.agentOut, append(resp, '\n'), true); err != nil {
 								return err
 							}
 						}
@@ -262,13 +262,13 @@ func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error
 					// Record before forwarding so a decision that depends on this frame
 					// (a rug-pull discovered in tools/list) is visible to the next call.
 					p.record(dir, line, routeHint{}, dec, false)
-					if err := p.write(dst, line); err != nil {
+					if err := p.write(dst, line, false); err != nil {
 						return err
 					}
 				}
 			} else {
 				p.record(dir, line, routeHint{}, nil, false)
-				if err := p.write(dst, line); err != nil {
+				if err := p.write(dst, line, true); err != nil {
 					return err
 				}
 			}
@@ -284,9 +284,17 @@ func (p *pipeline) pump(dst io.Writer, src io.Reader, dir event.Direction) error
 
 // write forwards a frame, serialized so a synthetic block response can never
 // interleave with a server response mid-frame.
-func (p *pipeline) write(dst io.Writer, line []byte) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+//
+// Only writes to the agent can interleave: the server's responses and the gate's
+// synthetic replies both go there, from different goroutines. Writes to the server
+// come from one goroutine and take no lock. Sharing one lock for both directions
+// deadlocked when the server stopped reading while it still had output to send: the
+// stalled write to the server held the lock that the write to the agent needed.
+func (p *pipeline) write(dst io.Writer, line []byte, toAgent bool) error {
+	if toAgent {
+		p.writeMu.Lock()
+		defer p.writeMu.Unlock()
+	}
 	_, err := dst.Write(line)
 	return err
 }
@@ -295,14 +303,31 @@ func (p *pipeline) write(dst io.Writer, line []byte) error {
 // When the frame is blocked, resp is the synthetic reply for the agent (empty when
 // the blocked frame carried no request that expects one).
 func (p *pipeline) gate(line []byte) (resp []byte, dec *policy.Decision, blocked bool) {
-	if p.policy == nil {
+	if p.policy == nil || len(bytes.TrimSpace(line)) == 0 {
 		return nil, nil, false
 	}
+	// A frame the gate cannot read the way the server will is refused, not waved
+	// through: "not a tool call as far as I can tell" is how a gate gets bypassed.
+	// Shadow mode never blocks, so there it is only evaluated as far as it can be.
+	enforce := p.policy.Mode != policy.ModeShadow
+
 	if batch, isBatch := jsonrpc.DecodeBatch(line); isBatch {
+		if reason := batchAmbiguity(line); reason != "" && enforce {
+			return p.refuse(reason, batch, true)
+		}
 		return p.gateBatch(batch)
 	}
 	msg, err := jsonrpc.Decode(line)
-	if err != nil || msg.Method != "tools/call" {
+	if err != nil {
+		if enforce {
+			return p.refuse("frame is not a JSON-RPC message", nil, false)
+		}
+		return nil, nil, false
+	}
+	if reason := jsonrpc.Ambiguity(line); reason != "" && enforce {
+		return p.refuse(reason, []*jsonrpc.Message{msg}, false)
+	}
+	if msg.Method != "tools/call" {
 		return nil, nil, false
 	}
 	d, blocked := p.evaluate(msg)
@@ -313,6 +338,52 @@ func (p *pipeline) gate(line []byte) (resp []byte, dec *policy.Decision, blocked
 		return nil, &d, true // a notification gets no reply
 	}
 	return syntheticError(msg, d.Reason), &d, true
+}
+
+// batchAmbiguity explains why a batch cannot be judged: it is not a JSON array, or one
+// of its elements is not a message or could be read two ways.
+func batchAmbiguity(line []byte) string {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(line), &elems); err != nil {
+		return "batch is not valid JSON"
+	}
+	for _, e := range elems {
+		if reason := jsonrpc.Ambiguity(e); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// refuse blocks a frame the gate cannot judge. Every request in it gets an error, so
+// the agent is not left waiting; a frame with no readable request gets one error with
+// a null id, as JSON-RPC prescribes for input that cannot be parsed.
+func (p *pipeline) refuse(reason string, msgs []*jsonrpc.Message, isBatch bool) ([]byte, *policy.Decision, bool) {
+	reason = "cannot be checked against the policy: " + reason
+	dec := policy.Decision{Action: policy.Deny, Mode: policy.ModeEnforce, Rule: -1, Reason: reason}
+
+	req := policy.Request{Server: p.server}
+	if len(msgs) == 1 {
+		req.Tool, req.Args = msgs[0].ToolName(), string(msgs[0].Params)
+	}
+	p.auditDecision(req, dec, false)
+
+	var replies []json.RawMessage
+	for _, m := range msgs {
+		if m.IsRequest() {
+			replies = append(replies, syntheticError(m, reason))
+		}
+	}
+	switch {
+	case len(replies) == 0 && len(msgs) > 0 && !isBatch:
+		return nil, &dec, true // a notification or a response: nothing to answer
+	case len(replies) == 0:
+		return syntheticError(nil, reason), &dec, true
+	case !isBatch:
+		return replies[0], &dec, true
+	}
+	out, _ := json.Marshal(replies)
+	return out, &dec, true
 }
 
 // gateBatch evaluates every tools/call in a JSON-RPC batch. Forwarding part of a
@@ -444,13 +515,12 @@ func (p *pipeline) auditDecision(req policy.Request, dec policy.Decision, approv
 
 // auditArgs is the only copy of the arguments that leaves the process for the audit
 // log, so it is redacted and bounded even though policy matching used the raw value.
+//
+// It is also what a human is shown when asked to approve a call, so it is the
+// canonical form, the same text the args rules matched. The raw frame can pad itself
+// with whitespace until the part that matters falls outside what is displayed.
 func auditArgs(red *redact.Redactor, args string) string {
-	out := red.String(args)
-	const max = 4096
-	if len(out) > max {
-		out = out[:max] + "…"
-	}
-	return out
+	return policy.Elide(red.String(policy.CanonicalArgs(args)), 3072, 1024)
 }
 
 // callIDFor groups MRTR retries under the id of the initial request. The retry has a

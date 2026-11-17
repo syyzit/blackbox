@@ -164,10 +164,19 @@ func resolveExternalID(db *sql.DB, prefix string) (string, error) {
 	if prefix == "" {
 		return "", errors.New("store: empty trace id")
 	}
+	// A complete id always names that trace, even when longer ids start with it.
+	var exact string
+	switch err := db.QueryRow(`SELECT external_id FROM events WHERE external_id = ? LIMIT 1`, prefix).Scan(&exact); {
+	case err == nil:
+		return exact, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", err
+	}
+
 	rows, err := db.Query(
 		`SELECT DISTINCT external_id FROM events
-		  WHERE external_id = ? OR external_id LIKE ? LIMIT 2`,
-		prefix, prefix+"%")
+		  WHERE external_id LIKE ? ESCAPE '\' LIMIT 2`,
+		escapeLike(prefix)+"%")
 	if err != nil {
 		return "", err
 	}
@@ -190,11 +199,6 @@ func resolveExternalID(db *sql.DB, prefix string) (string, error) {
 	case 1:
 		return ids[0], nil
 	default:
-		for _, id := range ids {
-			if id == prefix {
-				return id, nil
-			}
-		}
 		return "", fmt.Errorf("store: trace prefix %q is ambiguous", prefix)
 	}
 }

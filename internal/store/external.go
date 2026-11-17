@@ -56,31 +56,29 @@ func AppendExternal(home string, src Source, sessionID string, events []event.Ev
 		return err
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var seq int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?`, id).Scan(&seq); err != nil {
-		return err
-	}
-	for _, e := range events {
-		seq++
-		e.SessionID = id
-		if e.ExternalID == "" {
-			e.ExternalID = sessionID
-		}
-		e.Seq = seq
-		if e.At.IsZero() {
-			e.At = now
-		}
-		if err := insertEvent(tx, e); err != nil {
+	// The next sequence number is read and then used, and several hook processes
+	// append to one session at once, so the write lock is taken before the read.
+	return withWriteLock(db, func(tx writeTx) error {
+		var seq int64
+		if err := tx.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?`, id).Scan(&seq); err != nil {
 			return err
 		}
-	}
-	return tx.Commit()
+		for _, e := range events {
+			seq++
+			e.SessionID = id
+			if e.ExternalID == "" {
+				e.ExternalID = sessionID
+			}
+			e.Seq = seq
+			if e.At.IsZero() {
+				e.At = now
+			}
+			if err := insertEvent(tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // RecordExternalDecision records a policy decision for an external session, creating

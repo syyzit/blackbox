@@ -459,7 +459,7 @@ async function decideApproval(id, decision) {
     await fetch("/api/approvals/" + encodeURIComponent(id), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, by: "ui" }),
+      body: JSON.stringify({ decision }),
     });
   } catch (err) {
     console.error(err);

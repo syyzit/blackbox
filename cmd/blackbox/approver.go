@@ -120,10 +120,7 @@ func (t *terminalApprover) approve(r policy.ApprovalRequest) (bool, string) {
 	}
 
 	promptedAt := time.Now()
-	args := r.Args
-	if len(args) > 240 {
-		args = args[:240] + "…"
-	}
+	args := policy.Elide(r.Args, 400, 200)
 	fmt.Fprintf(out, "\nblackbox · approval required\n  server  %s\n  tool    %s\n  args    %s\n  reason  %s\nallow? [y/N] ",
 		printable(r.Server), printable(r.Tool), printable(args), printable(r.Reason))
 

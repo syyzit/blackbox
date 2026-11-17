@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -120,6 +121,61 @@ func TestHookSkipsMCPToolsUnlessAsked(t *testing.T) {
 	}
 	if _, events, err := store.Find(home, "cc-s1"); err != nil || len(events) != 2 {
 		t.Fatalf("with -mcp: events=%d err=%v", len(events), err)
+	}
+}
+
+func TestMCPToolNames(t *testing.T) {
+	cases := map[string][]string{
+		"mcp__fake__echo":       {"echo"},
+		"mcp__my__srv__do_it":   {"srv__do_it", "do_it"},
+		"mcp__plugin_a_b__read": {"read"},
+		"mcp__broken":           nil,
+		"mcp____":               nil,
+	}
+	for in, want := range cases {
+		got := mcpToolNames(in)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("mcpToolNames(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestHookLinksProxiedMCPCallToTheSession(t *testing.T) {
+	home := t.TempDir()
+	mcp, err := store.Open(home, []string{"fakeserver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []event.Event{
+		{Direction: event.ClientToServer, Method: "tools/call", Tool: "echo", CallID: "call-1",
+			Status: event.StatusPending, At: time.Now().UTC(), Args: `{"name":"echo","arguments":{"text":"hi"}}`, Raw: `{}`},
+		{Direction: event.ServerToClient, Method: "tools/call", Tool: "echo", CallID: "call-1",
+			Status: event.StatusOK, At: time.Now().UTC(), Raw: `{}`},
+	} {
+		if err := mcp.Emit(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mcp.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, errw := hookRun(t, hookOptions{home: home}, `{"session_id":"s1",
+		"hook_event_name":"PostToolUse","tool_name":"mcp__fake__echo","tool_input":{"text":"hi"},
+		"tool_response":{},"tool_use_id":"toolu_5","duration_ms":12}`)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errw)
+	}
+	tr, err := store.TraceFor(home, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.Events) != 2 || tr.Events[0].Tool != "echo" {
+		t.Fatalf("the proxied call did not join the Claude Code trace: %+v", tr.Events)
+	}
+	// Linking is not recording: without -mcp the call must not be stored a second time.
+	if _, _, err := store.Find(home, "cc-s1"); err == nil {
+		t.Fatal("the MCP call was also recorded as a built-in call")
 	}
 }
 
@@ -281,6 +337,10 @@ func TestEditHookSettingsInstallsOnce(t *testing.T) {
 			h.Get("args.0").String() != "hook" || h.Get("type").String() != "command" {
 			t.Fatalf("%s: %s", ev, groups[0].Raw)
 		}
+	}
+
+	if !hasBlackboxHook(first) || hasBlackboxHook([]byte(`{"hooks":{"Stop":[]}}`)) {
+		t.Fatal("hasBlackboxHook does not recognise what install wrote")
 	}
 
 	second, err := editHookSettings(first, bin, []string{"hook"}, false)

@@ -57,3 +57,27 @@ func FuzzAllowedHost(f *testing.F) {
 		}
 	})
 }
+
+func TestGuardChecksOrigin(t *testing.T) {
+	cases := map[string]int{
+		"":                              http.StatusOK, // not a browser
+		"http://127.0.0.1:8787":         http.StatusOK,
+		"http://localhost:5173":         http.StatusOK,
+		"http://[::1]:8787":             http.StatusOK,
+		"https://evil.example":          http.StatusForbidden,
+		"http://127.0.0.1.evil.example": http.StatusForbidden,
+		"null":                          http.StatusForbidden,
+	}
+	g := Guard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	for origin, want := range cases {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:8787/", nil)
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, r)
+		if w.Code != want {
+			t.Errorf("Origin %q: status %d, want %d", origin, w.Code, want)
+		}
+	}
+}
