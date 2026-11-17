@@ -337,13 +337,20 @@ Secrets are removed from recordings, audit entries and exports before anything i
 written. The live stream between agent and server is never changed. Built-in rules
 cover:
 
-- private keys
+- private keys, PEM and PGP, including ones cut off before their END line
 - Anthropic, OpenAI, GitHub (classic and fine-grained), GitLab, AWS, Google, Stripe,
   Slack, npm and Hugging Face tokens
 - bearer tokens and JWTs
-- passwords in URLs (`postgres://app:[REDACTED:password]@db/prod`)
-- values assigned to keys like `password`, `token`, `secret`, `api_key` or
-  `private_key`
+- passwords in URLs (`postgres://app:[REDACTED:password]@db/prod`,
+  `redis://:[REDACTED:password]@cache`)
+- values assigned to keys like `password`, `token`, `secret`, `api_key`,
+  `private_key` or `aws_secret_access_key`. A quoted value is removed up to its
+  closing quote, also when the quotes are escaped because the JSON sits inside a JSON
+  string. An `Authorization` header keeps its scheme
+  (`Authorization: Basic [REDACTED:secret]`), and a number becomes a string
+  (`"token":"[REDACTED:secret]"`).
+
+A recorded frame that was valid JSON is still valid JSON after redaction.
 
 Add your own formats in `~/.blackbox/redact.json`. They run before the built-in rules:
 

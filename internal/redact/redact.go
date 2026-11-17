@@ -16,6 +16,18 @@ type Rule struct {
 	Name    string
 	Re      *regexp.Regexp
 	Replace string
+
+	// apply, when set, does the rule's work instead of Re and Replace. It is for the
+	// built-in rules a regexp alone cannot express; Re still describes what they
+	// look for.
+	apply func(string) string
+}
+
+func (rule Rule) redact(s string) string {
+	if rule.apply != nil {
+		return rule.apply(s)
+	}
+	return rule.Re.ReplaceAllString(s, rule.Replace)
 }
 
 // Redactor applies a sequence of rules.
@@ -40,7 +52,7 @@ func (r *Redactor) String(s string) string {
 		return s
 	}
 	for _, rule := range r.rules {
-		s = rule.Re.ReplaceAllString(s, rule.Replace)
+		s = rule.redact(s)
 	}
 	return s
 }
@@ -51,7 +63,11 @@ func (r *Redactor) HasSecrets(s string) bool {
 		return false
 	}
 	for _, rule := range r.rules {
-		if rule.Re.MatchString(s) {
+		if rule.apply != nil {
+			if rule.apply(s) != s {
+				return true
+			}
+		} else if rule.Re.MatchString(s) {
 			return true
 		}
 	}
@@ -65,9 +81,11 @@ func Default() *Redactor {
 
 var defaultRules = []Rule{
 	{
+		// The BEGIN line and the key after it; see privatekey.go.
 		Name:    "private-key",
-		Re:      regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
-		Replace: "[REDACTED:private-key]",
+		Re:      privateKeyBeginRe,
+		Replace: privateKeyMark,
+		apply:   redactPrivateKeys,
 	},
 	{
 		// Before openai-key, whose sk- prefix also matches sk-ant- keys.
@@ -133,8 +151,13 @@ var defaultRules = []Rule{
 	{
 		// Keeps the scheme, host and user, drops the password:
 		// postgres://app:[REDACTED:password]@db:5432/prod
+		// The user may be empty (redis://:password@host). A backslash is taken with
+		// the character it escapes, so a JSON escape is never cut in half; a quote,
+		// escaped or not, is never part of the password. Nor is a square bracket,
+		// which a URL has to percent-encode there: that keeps the rule from reading
+		// a [REDACTED:…] marker left by another rule as a password on a later pass.
 		Name:    "url-credentials",
-		Re:      regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@"]+:)[^\s@/"]+@`),
+		Re:      regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@"\\]*:)(?:[^\s@/"\\\[\]]|\\[^\s/"])+@`),
 		Replace: "${1}[REDACTED:password]@",
 	},
 	{
@@ -148,12 +171,13 @@ var defaultRules = []Rule{
 		Replace: "[REDACTED:jwt]",
 	},
 	{
-		// Keeps the key name, drops the value: "password": "hunter2". A value
-		// starting with "[" is not matched, so text that was already redacted
-		// ("password": "[REDACTED:secret]") is left alone on a second pass.
+		// Keeps the key name, drops the value: "password": "hunter2". Text that was
+		// already redacted ("password": "[REDACTED:secret]") is left alone on a
+		// second pass. See assign.go for how the value is read.
 		Name:    "secret-assignment",
-		Re:      regexp.MustCompile(`(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|client[_-]?secret|secret|password|passwd|private[_-]?key|credentials?|authorization)"?\s*[:=]\s*"?)([^\s",}\]\[][^\s",}\]]{5,})`),
-		Replace: "${1}[REDACTED:secret]",
+		Re:      secretAssignmentRe,
+		Replace: secretMark,
+		apply:   redactAssignments,
 	},
 }
 
