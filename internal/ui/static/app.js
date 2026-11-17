@@ -406,6 +406,73 @@ function sourceOf(event) {
   return String(event.sessionId || "").startsWith("oc-") ? "builtin" : "mcp";
 }
 
+async function refreshApprovals() {
+  try {
+    const data = await api("/api/approvals");
+    const n = (data.approvals || []).length;
+    $("approvalsBtn").textContent = n ? `Approvals (${n})` : "Approvals";
+    $("approvalsBtn").classList.toggle("attention", n > 0);
+  } catch (err) {
+    // The server may not have approvals endpoints yet; keep the button quiet.
+  }
+}
+
+function approvalRow(a) {
+  return `
+    <div class="approval">
+      <div class="approval-head">
+        <span class="mono">#${a.id} · ${esc(a.tool)}</span>
+        <span class="muted mono">${esc(shortId(a.sessionId))} · ${esc(fmtTime(a.createdAt))}</span>
+      </div>
+      <div class="muted">${esc(a.reason || "")}</div>
+      <pre class="mono">${esc(a.args || "")}</pre>
+      <div class="approval-actions">
+        <button class="btn" data-approve="${a.id}">approve</button>
+        <button class="btn ghost" data-deny="${a.id}">deny</button>
+      </div>
+    </div>`;
+}
+
+async function showApprovals() {
+  try {
+    const data = await api("/api/approvals");
+    const list = data.approvals || [];
+    $("modalTitle").textContent = "Approvals";
+    $("diffBody").innerHTML = list.length
+      ? list.map(approvalRow).join("")
+      : '<div class="diff-ok">no pending approvals</div>';
+    $("diffModal").classList.remove("hidden");
+
+    for (const btn of document.querySelectorAll("[data-approve]")) {
+      btn.addEventListener("click", () => decideApproval(btn.dataset.approve, "allow"));
+    }
+    for (const btn of document.querySelectorAll("[data-deny]")) {
+      btn.addEventListener("click", () => decideApproval(btn.dataset.deny, "deny"));
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function decideApproval(id, decision) {
+  try {
+    await fetch("/api/approvals/" + encodeURIComponent(id), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, by: "ui" }),
+    });
+  } catch (err) {
+    console.error(err);
+  }
+  await refreshApprovals();
+  await showApprovals();
+  await refreshCurrent();
+}
+
+function shortId(id) {
+  return id && id.length > 18 ? id.slice(0, 8) + "…" + id.slice(-6) : id || "";
+}
+
 async function showTrace() {
   if (!state.traceId) return;
   try {
@@ -477,6 +544,7 @@ function bind() {
 
   $("diffBtn").addEventListener("click", showDiff);
   $("traceBtn").addEventListener("click", showTrace);
+  $("approvalsBtn").addEventListener("click", showApprovals);
   $("exportBtn").addEventListener("click", () => {
     if (!state.meta) return;
     window.location.href = "/api/sessions/" + encodeURIComponent(state.meta.id) + "/export";
@@ -507,3 +575,5 @@ bind();
 loadSessions();
 setInterval(loadSessions, 5000);
 setInterval(refreshCurrent, 2000);
+setInterval(refreshApprovals, 2000);
+refreshApprovals();

@@ -1,0 +1,47 @@
+# Release builds for the blackbox CLI. Run by .github/workflows/release.yml when a
+# v* tag is pushed. Try it locally with: goreleaser release --snapshot --clean
+version: 2
+
+project_name: blackbox
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: blackbox
+    main: ./cmd/blackbox
+    binary: blackbox
+    env:
+      - CGO_ENABLED=0 # the SQLite driver is pure Go, so builds are static
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: blackbox
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - docs/policy.example.json
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+
+release:
+  draft: true # review the notes, then publish

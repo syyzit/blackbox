@@ -13,7 +13,7 @@ func TestLedgerDetectsChangedDefinitionsAcrossRuns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tooldefs.json")
 	server := ServerKey([]string{"fake-server", "--root", "/tmp"})
 
-	l := LoadLedger(path)
+	l := mustLoad(t, path)
 	if l.Observe(server, "read_file", "aaaaaaaaaaaaaaaa") {
 		t.Fatal("first observation must not be a change")
 	}
@@ -28,7 +28,7 @@ func TestLedgerDetectsChangedDefinitionsAcrossRuns(t *testing.T) {
 	}
 
 	// A fresh process sees the persisted state.
-	l2 := LoadLedger(path)
+	l2 := mustLoad(t, path)
 	if !l2.Observe(server, "read_file", "dddddddddddddddd") {
 		t.Fatal("ledger did not persist across reloads")
 	}
