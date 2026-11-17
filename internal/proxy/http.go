@@ -140,6 +140,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(body) > 0 {
 		h.rec.record(event.ClientToServer, body, hint, dec, false)
 	}
+	// Whatever happens below, a request this exchange did not answer is over when the
+	// exchange is.
+	failure := "upstream sent no JSON-RPC response to this request"
+	defer func() { h.rec.abandon(hint.scope, failure) }()
 
 	target := *h.upstream
 	target.Path = singleJoin(h.upstream.Path, r.URL.Path)
@@ -147,7 +151,8 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, "blackbox: building upstream request: "+err.Error(), http.StatusBadGateway)
+		failure = "building upstream request: " + err.Error()
+		http.Error(w, "blackbox: "+failure, http.StatusBadGateway)
 		return
 	}
 	copyHeaders(req.Header, r.Header)
@@ -165,10 +170,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		http.Error(w, "blackbox: upstream: "+err.Error(), http.StatusBadGateway)
+		failure = "upstream: " + err.Error()
+		http.Error(w, "blackbox: "+failure, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	failure = fmt.Sprintf("upstream answered HTTP %d without a JSON-RPC response to this request", resp.StatusCode)
 
 	copyHeaders(w.Header(), resp.Header)
 	w.Header().Del("Content-Length") // the body may be redacted/re-encoded downstream

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,6 +150,7 @@ func RunStdio(ctx context.Context, o Options) error {
 }
 
 type call struct {
+	id         string // IDString of the request, for an error recorded without a response
 	method     string
 	tool       string
 	at         time.Time
@@ -717,7 +719,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 
 		p.mu.Lock()
 		p.pending[corrKey(hint.scope, msg.ID)] = call{
-			method: e.Method, tool: e.Tool, at: e.At,
+			id: e.ID, method: e.Method, tool: e.Tool, at: e.At,
 			callID: e.CallID, state: msg.RequestState(),
 			externalID: e.ExternalID, session: hint.session,
 		}
@@ -829,6 +831,45 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 	}
 
 	p.emit(e)
+}
+
+// abandon ends the calls still waiting in an HTTP exchange that is over. The scope is
+// unique to that exchange, so nothing can answer them later: left in place they would
+// accumulate for the life of the proxy and the calls would look pending forever. Each
+// is recorded as an error; the event is synthetic because no frame carried it.
+func (p *pipeline) abandon(scope, reason string) {
+	if scope == "" {
+		return // stdio: one long-lived connection, nothing is over yet
+	}
+	prefix := corrKey(scope, nil)
+	p.mu.Lock()
+	var gone []call
+	for k, c := range p.pending {
+		if strings.HasPrefix(k, prefix) {
+			gone = append(gone, c)
+			delete(p.pending, k)
+		}
+	}
+	p.mu.Unlock()
+
+	for _, c := range gone {
+		at := time.Now().UTC()
+		p.emit(event.Event{
+			SessionID:  p.sessionID,
+			Seq:        p.seq.Add(1),
+			At:         at,
+			Direction:  event.ServerToClient,
+			Method:     c.method,
+			Tool:       c.tool,
+			ID:         c.id,
+			CallID:     c.callID,
+			ExternalID: c.externalID,
+			Status:     event.StatusError,
+			Error:      p.red.String(reason),
+			DurationMS: at.Sub(c.at).Milliseconds(),
+			Synthetic:  true,
+		})
+	}
 }
 
 func (p *pipeline) emit(e event.Event) {
