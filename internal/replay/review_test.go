@@ -105,6 +105,31 @@ func TestDiffKeepsCallsOfDifferentSessionsApart(t *testing.T) {
 	}
 }
 
+// Replay pairs a response with its request by id within its session, as Diff does:
+// in a merged trace each session numbers its requests from 1, and interleaved.
+func TestReplayKeepsSessionsWithSameIDApart(t *testing.T) {
+	in := func(session string, e event.Event) event.Event {
+		e.SessionID = session
+		if e.Direction == event.ClientToServer {
+			e.CallID = "call-" + e.ID
+		}
+		return e
+	}
+	eng := New([]event.Event{
+		in("fs", request("1", "tools/call", "read", `{"name":"read","arguments":{}}`)),
+		in("shell", request("1", "tools/call", "run", `{"name":"run","arguments":{}}`)),
+		in("fs", response("1", `{"text":"from fs"}`)),
+		in("shell", response("1", `{"text":"from shell"}`)),
+	})
+
+	for tool, want := range map[string]string{"read": `{"text":"from fs"}`, "run": `{"text":"from shell"}`} {
+		got, ok := eng.Respond([]byte(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"` + tool + `","arguments":{}}}`))
+		if !ok || string(got) != want {
+			t.Errorf("%s answered with %s (matched %v), want %s", tool, got, ok, want)
+		}
+	}
+}
+
 func TestEngineForgetsLastExchangeWhenNothingMatches(t *testing.T) {
 	eng := New([]event.Event{
 		request("1", "tools/call", "echo", `{"name":"echo","arguments":{}}`),

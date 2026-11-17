@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,6 +150,7 @@ func RunStdio(ctx context.Context, o Options) error {
 }
 
 type call struct {
+	id         string // IDString of the request, for an error recorded without a response
 	method     string
 	tool       string
 	at         time.Time
@@ -187,6 +189,7 @@ type pipeline struct {
 	priceIn   float64
 	priceOut  float64
 	maxFrame  int
+	keepFrame int // how much of an oversized frame is recorded; recordedPrefix outside tests
 
 	agentOut    io.Writer
 	writeMu     sync.Mutex
@@ -216,6 +219,7 @@ func newPipeline(c pipelineConfig) *pipeline {
 	}
 	return &pipeline{
 		maxFrame:      c.MaxFrame,
+		keepFrame:     recordedPrefix,
 		sessionID:     c.SessionID,
 		sink:          c.Sink,
 		red:           c.Redactor,
@@ -648,11 +652,21 @@ type routeHint struct {
 	session string
 }
 
-func corrKey(scope, id string) string {
-	if scope == "" {
-		return id
+// corrKey keys correlation on the id's type and value, not IDString: 1 and "1" are
+// different ids, and a peer that answers "1" must not consume the pending entry for 1
+// (a tools/list whose real response would then never be hashed). A string is keyed by
+// its decoded value, since servers re-encode ids ("é" comes back as "é", "a/b"
+// as "a\/b"); anything else by its JSON text.
+func corrKey(scope string, id json.RawMessage) string {
+	key := "v:" + string(id)
+	var s string
+	if len(id) > 0 && id[0] == '"' && json.Unmarshal(id, &s) == nil {
+		key = "s:" + s
 	}
-	return scope + "\x00" + id
+	if scope == "" {
+		return key
+	}
+	return scope + "\x00" + key
 }
 
 // record indexes a copy of the frame. Errors are deliberately swallowed: a broken
@@ -713,8 +727,8 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		}
 
 		p.mu.Lock()
-		p.pending[corrKey(hint.scope, e.ID)] = call{
-			method: e.Method, tool: e.Tool, at: e.At,
+		p.pending[corrKey(hint.scope, msg.ID)] = call{
+			id: e.ID, method: e.Method, tool: e.Tool, at: e.At,
 			callID: e.CallID, state: msg.RequestState(),
 			externalID: e.ExternalID, session: hint.session,
 		}
@@ -733,7 +747,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		e.Args = p.red.String(compact(msg.Params))
 
 		p.mu.Lock()
-		p.serverPending[corrKey(hint.session, e.ID)] = call{method: e.Method, tool: e.Tool, at: e.At, session: hint.session}
+		p.serverPending[corrKey(hint.session, msg.ID)] = call{method: e.Method, tool: e.Tool, at: e.At, session: hint.session}
 		p.mu.Unlock()
 
 	case isNotification:
@@ -750,11 +764,11 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			ok bool
 		)
 		if dir == event.ServerToClient {
-			key := corrKey(hint.scope, e.ID)
+			key := corrKey(hint.scope, msg.ID)
 			c, ok = p.pending[key]
 			delete(p.pending, key)
 		} else {
-			key := corrKey(hint.session, e.ID)
+			key := corrKey(hint.session, msg.ID)
 			c, ok = p.serverPending[key]
 			delete(p.serverPending, key)
 		}
@@ -826,6 +840,45 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 	}
 
 	p.emit(e)
+}
+
+// abandon ends the calls still waiting in an HTTP exchange that is over. The scope is
+// unique to that exchange, so nothing can answer them later: left in place they would
+// accumulate for the life of the proxy and the calls would look pending forever. Each
+// is recorded as an error; the event is synthetic because no frame carried it.
+func (p *pipeline) abandon(scope, reason string) {
+	if scope == "" {
+		return // stdio: one long-lived connection, nothing is over yet
+	}
+	prefix := scope + "\x00" // every key corrKey makes for this scope starts so
+	p.mu.Lock()
+	var gone []call
+	for k, c := range p.pending {
+		if strings.HasPrefix(k, prefix) {
+			gone = append(gone, c)
+			delete(p.pending, k)
+		}
+	}
+	p.mu.Unlock()
+
+	for _, c := range gone {
+		at := time.Now().UTC()
+		p.emit(event.Event{
+			SessionID:  p.sessionID,
+			Seq:        p.seq.Add(1),
+			At:         at,
+			Direction:  event.ServerToClient,
+			Method:     c.method,
+			Tool:       c.tool,
+			ID:         c.id,
+			CallID:     c.callID,
+			ExternalID: c.externalID,
+			Status:     event.StatusError,
+			Error:      p.red.String(reason),
+			DurationMS: at.Sub(c.at).Milliseconds(),
+			Synthetic:  true,
+		})
+	}
 }
 
 func (p *pipeline) emit(e event.Event) {

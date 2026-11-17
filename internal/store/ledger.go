@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-	"time"
 )
 
 // Ledger remembers the approved tool definitions for each server command, so a later
@@ -32,9 +31,9 @@ type Ledger struct {
 	cleared map[string]string
 	// dirty is set when a definition was remembered that is not on disk yet.
 	dirty bool
-	// lastMod is the ledger's mtime when this process last read or wrote it, used to
-	// notice another process accepting a change.
-	lastMod time.Time
+	// seen is the ledger file as it was when this process last read or wrote it (nil
+	// if there was none), used to notice another process's writes.
+	seen os.FileInfo
 }
 
 type ledgerData struct {
@@ -66,8 +65,8 @@ func LoadLedger(path string) (*Ledger, error) {
 	l := &Ledger{path: path, cleared: map[string]string{}}
 	unlock := lockLedgerForRead(path)
 	defer unlock()
-	if info, err := os.Stat(path); err == nil {
-		l.lastMod = info.ModTime()
+	if info, err := statLedger(path); err == nil {
+		l.seen = info
 	}
 	d, err := readLedger(path)
 	if err != nil {
@@ -283,15 +282,15 @@ func (l *Ledger) refreshLocked() {
 	if l.path == "" {
 		return
 	}
-	info, err := os.Stat(l.path)
-	if err != nil || !info.ModTime().After(l.lastMod) {
+	info, err := statLedger(l.path)
+	if err != nil || !ledgerChanged(l.seen, info) {
 		return
 	}
 	// The caller holds l.mu but never the file lock, which is not re-entrant.
 	unlock := lockLedgerForRead(l.path)
 	defer unlock()
-	// Stat again under the lock, so the time remembered is that of the file read.
-	if locked, err := os.Stat(l.path); err == nil {
+	// Stat again under the lock, so what is remembered is the file read.
+	if locked, err := statLedger(l.path); err == nil {
 		info = locked
 	}
 	disk, err := readLedger(l.path)
@@ -299,13 +298,33 @@ func (l *Ledger) refreshLocked() {
 		return // keep the state we have; the next write will surface the error
 	}
 	l.data = mergeLedger(disk, l.data, l.cleared)
-	l.lastMod = info.ModTime()
+	l.seen = info
 }
 
 func (l *Ledger) touchLocked() {
-	if info, err := os.Stat(l.path); err == nil {
-		l.lastMod = info.ModTime()
+	if info, err := statLedger(l.path); err == nil {
+		l.seen = info
 	}
+}
+
+// ledgerChanged reports whether the file is not the one last read or written. The
+// modification time alone misses a write that lands within the filesystem's timestamp
+// granularity. Writers replace the file by rename, so a write also gives it a new
+// identity; size is compared too, in case a file id is reused.
+func ledgerChanged(prev, cur os.FileInfo) bool {
+	return prev == nil || !os.SameFile(prev, cur) ||
+		!cur.ModTime().Equal(prev.ModTime()) || cur.Size() != prev.Size()
+}
+
+// statLedger stats the ledger with its file identity read now. On Windows os.Stat
+// leaves the identity to be read on first comparison, from whatever file is at the
+// path by then, and every later file would then compare as the same one.
+func statLedger(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err == nil {
+		os.SameFile(info, info)
+	}
+	return info, err
 }
 
 func (l *Ledger) saveLocked() error {

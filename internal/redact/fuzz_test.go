@@ -26,6 +26,12 @@ func FuzzRedact(f *testing.F) {
 		`{"key":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}`,
 		`-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----`,
 		`eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U`,
+		// url-credentials keeps the scheme and user in front of its marker, so the
+		// check below holds only because a password cannot contain "[" or "]".
+		`postgres://app:hunter2@db:5432/prod`,
+		`redis://:s3cret@cache:6379`,
+		`{"url":"https://u:p%40ss@example.com/x"}`,
+		`{"cmd":"git clone https://tok:x-oauth@github.com/o/r \"https://a:b\\\"c@h\""}`,
 	} {
 		f.Add(s)
 	}

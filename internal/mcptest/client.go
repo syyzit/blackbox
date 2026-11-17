@@ -29,6 +29,11 @@ type Client struct {
 	mu      sync.Mutex
 	nextID  int64
 	timeout time.Duration
+
+	// answering counts replies to server requests not yet written; Close waits for
+	// them. closing, under mu, stops new ones from starting once Close has begun.
+	answering sync.WaitGroup
+	closing   bool
 }
 
 // NewClient talks over an existing stream pair.
@@ -77,7 +82,15 @@ func (c *Client) readLoop(r io.Reader) {
 		if c.onRequest != nil {
 			var msg jsonrpc.Message
 			if err := json.Unmarshal(line, &msg); err == nil && msg.IsRequest() {
-				go c.answer(&msg)
+				c.mu.Lock()
+				if !c.closing {
+					c.answering.Add(1)
+					go func() {
+						defer c.answering.Done()
+						c.answer(&msg)
+					}()
+				}
+				c.mu.Unlock()
 				continue
 			}
 		}
@@ -175,8 +188,15 @@ func (c *Client) Notify(method string, params any) error {
 	return c.Send(b)
 }
 
-// Close closes the stream and, for a started process, waits for it to exit.
+// Close closes the stream and, for a started process, waits for it to exit. Replies to
+// server requests already being answered are written first: a test that stops the
+// client as soon as its handler has run would otherwise lose the reply, or not,
+// depending on scheduling.
 func (c *Client) Close() error {
+	c.mu.Lock()
+	c.closing = true
+	c.mu.Unlock()
+	c.answering.Wait()
 	_ = c.w.Close()
 	if c.cmd == nil {
 		return nil

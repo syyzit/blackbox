@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +39,43 @@ func TestCheckArgsKeepsPathsInsideRoot(t *testing.T) {
 	}
 }
 
+// A short option takes its value attached as well as in the next argument: grep
+// -f/etc/passwd reads its patterns from that file, git diff -O<file> its order file,
+// make -C<dir> changes directory first. Options can be bundled (-rf<file>).
+func TestCheckArgsChecksAttachedShortOptionValues(t *testing.T) {
+	root := t.TempDir()
+	denied := [][]string{
+		{"grep", "-f/etc/passwd", "x", "."},
+		{"grep", "-f../../outside.txt", "."},
+		{"grep", "-rf/etc/passwd", "."},
+		{"grep", `-f\Windows\win.ini`, "."},
+		{"rg", "-f/etc/passwd", "."},
+		{"git", "diff", "-O/etc/passwd"},
+		{"make", "-C/tmp"},
+		{"make", "-f../../Makefile"},
+	}
+	for _, c := range denied {
+		if err := checkArgs(root, root, c[0], c[1:]); err == nil || !strings.Contains(err.Error(), "outside the repo root") {
+			t.Errorf("%v: got %v, want outside-root rejection", c, err)
+		}
+	}
+	allowed := [][]string{
+		{"grep", "-rn", "needle", "."},
+		{"grep", "-A3", "-B2", "needle", "."},
+		{"grep", "-fpatterns.txt", "."},
+		{"head", "-n5", "README.md"},
+		{"git", "log", "-5"},
+		{"go", "test", "-run=TestX/sub", "./..."}, // a Go flag, not a bundle
+		{"go", "test", "-coverprofile=out/c.txt", "./..."},
+		{"grep", "-e", "a/b", "."},
+	}
+	for _, c := range allowed {
+		if err := checkArgs(root, root, c[0], c[1:]); err != nil {
+			t.Errorf("%v: unexpected rejection %v", c, err)
+		}
+	}
+}
+
 func TestCheckArgsBlocksFindActions(t *testing.T) {
 	root := t.TempDir()
 	for _, a := range []string{"-exec", "-execdir", "-delete", "-fprint"} {
@@ -47,6 +85,44 @@ func TestCheckArgsBlocksFindActions(t *testing.T) {
 	}
 	if err := checkArgs(root, root, "find", []string{".", "-name", "*.go"}); err != nil {
 		t.Errorf("plain find rejected: %v", err)
+	}
+}
+
+// rg can run a program per file (--pre) or to find the host name (--hostname-bin), and
+// reads extra arguments from the file RIPGREP_CONFIG_PATH names, which could say the
+// same. The guard is checked directly: rg need not be installed to test it.
+func TestRgCannotRunPrograms(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"--pre", "./x", "needle"},
+		{"--pre=./x", "needle"},
+		{"needle", ".", "--pre", "x"},
+		{"--hostname-bin", "./x", "needle"},
+		{"--hostname-bin=./x", "needle"},
+	} {
+		if err := checkArgs(root, root, "rg", args); err == nil {
+			t.Errorf("rg %v was allowed", args)
+		}
+	}
+	for _, args := range [][]string{
+		{"needle"},
+		{"-n", "--pre-glob", "*.pdf", "needle"}, // only says which files --pre would see
+		{"--pretty", "needle"},
+	} {
+		if err := checkArgs(root, root, "rg", args); err != nil {
+			t.Errorf("rg %v rejected: %v", args, err)
+		}
+	}
+
+	t.Setenv("RIPGREP_CONFIG_PATH", filepath.Join(root, "rgconfig"))
+	env := commandEnv("rg")
+	if env == nil {
+		env = os.Environ() // nil runs the command with mcpshell's own environment
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(strings.ToUpper(kv), "RIPGREP_CONFIG_PATH=") {
+			t.Fatalf("rg would read %s", kv)
+		}
 	}
 }
 

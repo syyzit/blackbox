@@ -7,14 +7,15 @@ import (
 
 func feed(stream []byte) [][]byte {
 	var p sseParser
+	return payloads(append(p.consume(stream), p.end()...))
+}
+
+func payloads(items []sseItem) [][]byte {
 	var out [][]byte
-	for _, l := range bytes.SplitAfter(stream, []byte("\n")) {
-		if payload, ok := p.line(l); ok {
-			out = append(out, payload)
+	for _, it := range items {
+		if it.payload != nil {
+			out = append(out, it.payload)
 		}
-	}
-	if payload, ok := p.flush(); ok {
-		out = append(out, payload)
 	}
 	return out
 }

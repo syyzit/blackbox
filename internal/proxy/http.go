@@ -57,6 +57,7 @@ type HTTP struct {
 	client    *http.Client
 	rec       *pipeline
 	exchanges atomic.Uint64 // numbers each request/response exchange for correlation
+	maxBody   int           // largest request body forwarded
 }
 
 // NewHTTP builds an HTTP proxy.
@@ -83,6 +84,7 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 				ResponseHeaderTimeout: 0, // tools may be slow; the caller controls the deadline
 			},
 		},
+		maxBody: DefaultMaxFrame,
 		rec: newPipeline(pipelineConfig{
 			SessionID: o.SessionID,
 			Sink:      o.Sink,
@@ -101,12 +103,17 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 
 // ServeHTTP proxies one request to the upstream MCP server.
 func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	// One byte past the limit tells an oversized body from one that fits exactly.
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(h.maxBody)+1))
 	if err != nil {
 		http.Error(w, "blackbox: reading request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	_ = r.Body.Close()
+	if len(body) > h.maxBody {
+		h.refuseOversized(w, body)
+		return
+	}
 	body = bytes.TrimSpace(body)
 
 	// The routing headers are recorded as authoritative and forwarded upstream, while
@@ -140,14 +147,28 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(body) > 0 {
 		h.rec.record(event.ClientToServer, body, hint, dec, false)
 	}
+	// Whatever happens below, a request this exchange did not answer is over when the
+	// exchange is. The text claims no more than that: with streamable HTTP the response
+	// can still arrive on another exchange (a resumed GET stream), which the proxy
+	// cannot tell from a server that never answers.
+	failure := "no JSON-RPC response arrived on this HTTP exchange"
+	defer func() { h.rec.abandon(hint.scope, failure) }()
 
 	target := *h.upstream
-	target.Path = singleJoin(h.upstream.Path, r.URL.Path)
+	// Join the escaped forms: the decoded path turns %2F into a real slash, and the
+	// upstream would see a different path from the one the client sent.
+	target.RawPath = singleJoin(h.upstream.EscapedPath(), r.URL.EscapedPath())
+	if target.Path, err = url.PathUnescape(target.RawPath); err != nil {
+		failure = "request path: " + err.Error()
+		http.Error(w, "blackbox: "+failure, http.StatusBadRequest)
+		return
+	}
 	target.RawQuery = r.URL.RawQuery
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, "blackbox: building upstream request: "+err.Error(), http.StatusBadGateway)
+		failure = "building upstream request: " + err.Error()
+		http.Error(w, "blackbox: "+failure, http.StatusBadGateway)
 		return
 	}
 	copyHeaders(req.Header, r.Header)
@@ -165,10 +186,12 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		http.Error(w, "blackbox: upstream: "+err.Error(), http.StatusBadGateway)
+		failure = "upstream: " + err.Error()
+		http.Error(w, "blackbox: "+failure, http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	failure = fmt.Sprintf("no JSON-RPC response arrived on this HTTP exchange (HTTP %d)", resp.StatusCode)
 
 	copyHeaders(w.Header(), resp.Header)
 	w.Header().Del("Content-Length") // the body may be redacted/re-encoded downstream
@@ -195,6 +218,20 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.rec.record(event.ServerToClient, trimmed, respHint, nil, false)
 	}
 	_, _ = w.Write(respBody)
+}
+
+// refuseOversized answers 413 to a body larger than the limit. Forwarding the part
+// that was read would hand the server bytes the client never sent as a whole, and the
+// gate cannot judge a message it does not hold, so nothing is forwarded either way.
+// Under a policy the refusal is recorded as a denial, like an oversized stdio frame.
+func (h *HTTP) refuseOversized(w http.ResponseWriter, head []byte) {
+	reason := fmt.Sprintf("request body of more than %d bytes refused, not forwarded", h.maxBody)
+	var dec *policy.Decision
+	if h.rec.policy != nil {
+		dec = &policy.Decision{Action: policy.Deny, Mode: policy.ModeEnforce, Rule: -1, Reason: reason}
+	}
+	h.rec.recordOversize(event.ClientToServer, head, len(head), reason, dec)
+	http.Error(w, "blackbox: "+reason, http.StatusRequestEntityTooLarge)
 }
 
 // routeMismatch reports when the Mcp-Method / Mcp-Name headers name a different

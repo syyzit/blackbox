@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"time"
@@ -48,7 +49,7 @@ func (p *pipeline) oversize(dst io.Writer, br *bufio.Reader, dir event.Direction
 		total += n
 		reason := fmt.Sprintf("frame of %d bytes exceeds the %d byte limit and cannot be checked", total, p.maxFrame)
 		dec := &policy.Decision{Action: policy.Deny, Mode: policy.ModeEnforce, Rule: -1, Reason: reason}
-		p.recordOversize(dir, head, total, dec)
+		p.recordOversize(dir, head, total, p.overLimit(total), dec)
 		if p.agentOut != nil {
 			resp := syntheticError(nil, reason)
 			if err := p.write(p.agentOut, append(resp, '\n'), true); err != nil {
@@ -81,7 +82,7 @@ func (p *pipeline) oversize(dst io.Writer, br *bufio.Reader, dir event.Direction
 		readErr = err
 		break
 	}
-	p.recordOversize(dir, head, total, nil)
+	p.recordOversize(dir, head, total, p.overLimit(total), nil)
 	return readErr
 }
 
@@ -97,12 +98,33 @@ func skipLine(br *bufio.Reader) (int, error) {
 	}
 }
 
+// cutPrefix ends a cut prefix where no secret can be in progress. A secret cut in half
+// no longer matches its redaction pattern, so the half that is kept would be recorded
+// as it stands. Frames are JSON, where every secret the redactor knows lies inside a
+// string or after a key's quote, so the prefix ends at its last quote and the cut
+// string's contents are dropped. Without a quote it ends at the last whitespace, and
+// with neither nothing is kept.
+func cutPrefix(prefix []byte) []byte {
+	if i := bytes.LastIndexByte(prefix, '"'); i >= 0 {
+		return prefix[:i+1]
+	}
+	if i := bytes.LastIndexAny(prefix, " \t\r\n"); i >= 0 {
+		return prefix[:i+1]
+	}
+	return nil
+}
+
+func (p *pipeline) overLimit(total int) string {
+	return fmt.Sprintf("frame of %d bytes exceeded the %d byte recording limit", total, p.maxFrame)
+}
+
 // recordOversize keeps the beginning of an oversized frame as evidence. It cannot be
 // parsed, so it carries no method or tool.
-func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, dec *policy.Decision) {
+// note says what happened to the frame; the length of the kept prefix is appended.
+func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, note string, dec *policy.Decision) {
 	prefix := head
-	if len(prefix) > recordedPrefix {
-		prefix = prefix[:recordedPrefix]
+	if len(prefix) > p.keepFrame {
+		prefix = cutPrefix(prefix[:p.keepFrame])
 	}
 	e := event.Event{
 		SessionID: p.sessionID,
@@ -111,7 +133,7 @@ func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, d
 		Direction: dir,
 		Raw:       p.red.String(string(prefix)) + "…",
 		Size:      total,
-		Error:     fmt.Sprintf("frame of %d bytes exceeded the %d byte recording limit; only the first %d bytes are kept", total, p.maxFrame, len(prefix)),
+		Error:     fmt.Sprintf("%s; only the first %d bytes are kept", note, len(prefix)),
 	}
 	if dec != nil {
 		e.Decision = string(dec.Action)

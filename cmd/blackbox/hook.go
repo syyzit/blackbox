@@ -18,7 +18,7 @@ import (
 )
 
 // hookMaxInput bounds the hook's stdin. A tool result can be large; anything over the
-// limit is reported and skipped rather than recorded half-parsed (see hookOversized).
+// limit is reported and skipped rather than recorded half-parsed (see hookUnchecked).
 const hookMaxInput = 16 << 20
 
 // hookMaxField is the largest tool input or result recorded verbatim.
@@ -165,17 +165,21 @@ func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 		return 1
 	}
 	if len(data) > hookMaxInput {
-		return hookOversized(data, out, errw, opts)
+		return hookUnchecked(hookPrefixFields(data), out, errw, opts, uncheckedCall{
+			problem: fmt.Sprintf("input over %s, not recorded", humanBytes(hookMaxInput)),
+			reason: fmt.Sprintf("this call's input is too large for blackbox to check (over %s), "+
+				"and a policy is being enforced, so it was blocked. Retry with a smaller input.", humanBytes(hookMaxInput)),
+			args: `{"truncated":true}`,
+		})
 	}
 	fields, err := parseHookFields(data)
 	if err != nil {
-		fmt.Fprintln(errw, "blackbox hook: invalid JSON:", err)
-		return 1
+		// What can be read before the error says whether this is a call about to run.
+		return hookUnchecked(hookPrefixFields(data), out, errw, opts, unreadable("invalid JSON: "+err.Error()))
 	}
 	event, err := hookString(fields, "hook_event_name")
 	if err != nil {
-		fmt.Fprintln(errw, "blackbox hook:", err)
-		return 1
+		return hookUnchecked(fields, out, errw, opts, unreadable(err.Error()))
 	}
 	switch event {
 	case "PreToolUse", "PostToolUse", "PostToolUseFailure":
@@ -184,12 +188,17 @@ func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 	}
 	session, sessionErr := hookString(fields, "session_id")
 	tool, toolErr := hookString(fields, "tool_name")
+	problem := ""
 	if err := errors.Join(sessionErr, toolErr); err != nil {
-		fmt.Fprintln(errw, "blackbox hook:", err)
-		return 1
+		problem = err.Error()
+	} else if session == "" || tool == "" {
+		problem = "session_id and tool_name are required"
 	}
-	if session == "" || tool == "" {
-		fmt.Fprintln(errw, "blackbox hook: session_id and tool_name are required")
+	if problem != "" {
+		if event == "PreToolUse" {
+			return hookUnchecked(fields, out, errw, opts, unreadable(problem))
+		}
+		fmt.Fprintln(errw, "blackbox hook:", problem)
 		return 1
 	}
 	h := hookInputFrom(fields, event, session, tool)
@@ -208,21 +217,38 @@ func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 	return hookAfter(h, errw, opts)
 }
 
-// hookOversized handles input over the size limit, which is not parsed and so cannot
-// be checked against the policy or recorded.
+// uncheckedCall describes input the hook cannot check against the policy.
+type uncheckedCall struct {
+	problem string // reported when the call is let through
+	reason  string // given when it is denied
+	args    string // recorded as the call's arguments
+}
+
+func unreadable(problem string) uncheckedCall {
+	return uncheckedCall{
+		problem: problem,
+		reason: "this call's hook input could not be read (" + problem + "), " +
+			"and a policy is being enforced, so it was blocked.",
+		args: `{"unreadable":true}`,
+	}
+}
+
+// hookUnchecked handles input that cannot be checked against the policy or recorded:
+// it is over the size limit, is not a JSON object, or lacks a field the decision
+// needs. fields is whatever could be read of it.
 //
 // For a finished call that only costs the recording. For a call about to run it
-// would be a way past the policy: exit 1 lets the tool go ahead, so a large enough
-// input would skip every rule. When rules are being enforced, such a call is denied.
-func hookOversized(data []byte, out, errw io.Writer, opts hookOptions) int {
+// would be a way past the policy: exit 1 lets the tool go ahead, so input malformed
+// or large enough would skip every rule. When rules are being enforced, such a call
+// is denied.
+func hookUnchecked(fields map[string]json.RawMessage, out, errw io.Writer, opts hookOptions, c uncheckedCall) int {
 	failOpen := func() int {
-		fmt.Fprintf(errw, "blackbox hook: input over %s, not recorded\n", humanBytes(hookMaxInput))
+		fmt.Fprintln(errw, "blackbox hook:", c.problem)
 		return 1
 	}
 
-	// What can be read of the envelope before the cut. The event may be missing if
-	// the oversized field came first; that is treated as a call about to run.
-	fields := hookPrefixFields(data)
+	// The event may be missing or unreadable, for instance if an oversized field came
+	// first; that is treated as a call about to run.
 	event, _ := hookString(fields, "hook_event_name")
 	session, _ := hookString(fields, "session_id")
 	tool, _ := hookString(fields, "tool_name")
@@ -242,19 +268,17 @@ func hookOversized(data []byte, out, errw io.Writer, opts hookOptions) int {
 		return failOpen()
 	}
 
-	reason := fmt.Sprintf("this call's input is too large for blackbox to check (over %s), "+
-		"and a policy is being enforced, so it was blocked. Retry with a smaller input.", humanBytes(hookMaxInput))
 	if session != "" && tool != "" {
 		if err := store.RecordExternalDecision(opts.home, store.ClaudeCode, session, policy.DecisionRecord{
-			Server: store.ClaudeCode.Name, Tool: tool, Args: `{"truncated":true}`,
+			Server: store.ClaudeCode.Name, Tool: tool, Args: c.args,
 			CallID: lenientText(fields["tool_use_id"], false),
-			Action: policy.Deny, Mode: policy.ModeEnforce, Reason: reason,
+			Action: policy.Deny, Mode: policy.ModeEnforce, Reason: c.reason,
 			At: time.Now().UTC(),
 		}); err != nil {
 			fmt.Fprintln(errw, "blackbox hook:", err)
 		}
 	}
-	return hookDecision(out, "deny", "blackbox policy: "+reason)
+	return hookDecision(out, "deny", "blackbox policy: "+c.reason)
 }
 
 // hookPrefixFields returns the complete top-level fields at the start of a JSON
