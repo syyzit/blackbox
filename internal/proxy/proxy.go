@@ -648,11 +648,14 @@ type routeHint struct {
 	session string
 }
 
-func corrKey(scope, id string) string {
+// corrKey keys correlation on the id's exact JSON text, not IDString: 1 and "1" are
+// different ids, and a peer that answers "1" must not consume the pending entry for 1
+// (a tools/list whose real response would then never be hashed).
+func corrKey(scope string, id json.RawMessage) string {
 	if scope == "" {
-		return id
+		return string(id)
 	}
-	return scope + "\x00" + id
+	return scope + "\x00" + string(id)
 }
 
 // record indexes a copy of the frame. Errors are deliberately swallowed: a broken
@@ -713,7 +716,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		}
 
 		p.mu.Lock()
-		p.pending[corrKey(hint.scope, e.ID)] = call{
+		p.pending[corrKey(hint.scope, msg.ID)] = call{
 			method: e.Method, tool: e.Tool, at: e.At,
 			callID: e.CallID, state: msg.RequestState(),
 			externalID: e.ExternalID, session: hint.session,
@@ -733,7 +736,7 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 		e.Args = p.red.String(compact(msg.Params))
 
 		p.mu.Lock()
-		p.serverPending[corrKey(hint.session, e.ID)] = call{method: e.Method, tool: e.Tool, at: e.At, session: hint.session}
+		p.serverPending[corrKey(hint.session, msg.ID)] = call{method: e.Method, tool: e.Tool, at: e.At, session: hint.session}
 		p.mu.Unlock()
 
 	case isNotification:
@@ -750,11 +753,11 @@ func (p *pipeline) record(dir event.Direction, line []byte, hint routeHint, dec 
 			ok bool
 		)
 		if dir == event.ServerToClient {
-			key := corrKey(hint.scope, e.ID)
+			key := corrKey(hint.scope, msg.ID)
 			c, ok = p.pending[key]
 			delete(p.pending, key)
 		} else {
-			key := corrKey(hint.session, e.ID)
+			key := corrKey(hint.session, msg.ID)
 			c, ok = p.serverPending[key]
 			delete(p.serverPending, key)
 		}
