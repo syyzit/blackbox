@@ -32,7 +32,7 @@ func ExternalID(prefix, id string) string {
 // an external id. The session is created on first use.
 func AppendExternal(home, sessionID string, argv []string, events []event.Event) error {
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))
@@ -85,7 +85,7 @@ func AppendExternal(home, sessionID string, argv []string, events []event.Event)
 // the session row if this is the first thing the plugin reports.
 func RecordExternalDecision(home, sessionID string, d policy.DecisionRecord) error {
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))
@@ -117,7 +117,7 @@ func ensureExternalSession(db *sql.DB, id string, argv []string, startedAt time.
 // plugin) still counts as explained for the MCP session that was running then.
 func EventsBetween(home string, start, end time.Time) ([]event.Event, error) {
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))

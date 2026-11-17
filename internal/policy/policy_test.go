@@ -1,8 +1,10 @@
 package policy
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -177,4 +179,36 @@ func TestTimeoutApproverPassesFastAnswer(t *testing.T) {
 	if !got {
 		t.Fatal("a fast yes must be honoured")
 	}
+}
+
+// FuzzCanonicalArgs checks the property the gate relies on: canonicalizing is stable,
+// keeps valid JSON valid, and does not change what the JSON means.
+func FuzzCanonicalArgs(f *testing.F) {
+	for _, s := range []string{
+		`{"name":"shell","arguments":{"command":"rm\u0020-rf /"}}`,
+		`{"path" : "\/etc\/passwd", "n": 12345678901234567890, "f": 1.50}`,
+		`[1, "a", null, true, {"<": ">&"}]`,
+		`"just a string"`,
+		`not json`,
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		out := CanonicalArgs(in)
+		if again := CanonicalArgs(out); again != out {
+			t.Fatalf("not stable: %q -> %q -> %q", in, out, again)
+		}
+		if !json.Valid([]byte(in)) {
+			return
+		}
+		if !json.Valid([]byte(out)) {
+			t.Fatalf("valid input became invalid: %q -> %q", in, out)
+		}
+		var a, b any
+		if json.Unmarshal([]byte(in), &a) == nil && json.Unmarshal([]byte(out), &b) == nil {
+			if !reflect.DeepEqual(a, b) {
+				t.Fatalf("meaning changed: %q -> %q", in, out)
+			}
+		}
+	})
 }

@@ -46,3 +46,14 @@ func TestGuardRejectsRebindingHost(t *testing.T) {
 		t.Fatalf("local host got %d", rec.Code)
 	}
 }
+
+func FuzzAllowedHost(f *testing.F) {
+	for _, s := range []string{"127.0.0.1:8787", "[::1]:1", "evil.example", "localhost.", "[", ":"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, host string) {
+		if AllowedHost(host) && AllowedHost(host+".evil.example") {
+			t.Fatalf("a public domain under %q was allowed", host)
+		}
+	})
+}

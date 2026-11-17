@@ -397,7 +397,7 @@ func cmdExport(args []string) int {
 	if *out == "" {
 		_, err = os.Stdout.Write(data)
 	} else {
-		err = os.WriteFile(*out, data, 0o644)
+		err = os.WriteFile(*out, data, 0o600) // the bundle holds tool arguments and results
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)

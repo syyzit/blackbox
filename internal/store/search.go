@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -41,7 +40,7 @@ func Search(home string, opts SearchOptions) ([]SearchHit, error) {
 	}
 
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))

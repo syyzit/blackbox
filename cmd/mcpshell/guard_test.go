@@ -107,3 +107,16 @@ func TestGitPrefixDisablesRepoConfiguredPrograms(t *testing.T) {
 		}
 	}
 }
+
+func FuzzCheckArgs(f *testing.F) {
+	f.Add("git", "branch", "-vd")
+	f.Add("cat", "../../x", "--y=/etc")
+	f.Add("find", ".", "-exec")
+	f.Add("git", "tag", "--contains")
+	root := f.TempDir()
+	f.Fuzz(func(t *testing.T, cmd, a, b string) {
+		_ = checkArgs(root, root, cmd, []string{a, b})
+		_ = checkArgs(root, root, cmd, []string{a})
+		_ = checkArgs(root, root, cmd, nil)
+	})
+}

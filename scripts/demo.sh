@@ -57,5 +57,17 @@ wait
 D="$(newest)"
 ./bin/blackbox coverage "$D"
 
-step "6. inspect in the browser"
+step "6. rug-pull: the server quietly changes a tool, and the change is blocked"
+# The recordings above approved echo's definition. Now the same server advertises
+# a new one with an injected instruction and an extra parameter.
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}' \
+  | FAKESERVER_RUGPULL=1 ./bin/blackbox run -no-watch -- ./bin/fakeserver 2>/dev/null >/dev/null
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}' \
+  | FAKESERVER_RUGPULL=1 ./bin/blackbox run -no-watch -- ./bin/fakeserver 2>/dev/null | tail -1
+./bin/blackbox tools
+
+step "7. inspect in the browser"
 echo "blackbox ui -open    # sessions, scrubber, frame detail, run diff, coverage tab"

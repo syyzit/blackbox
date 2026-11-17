@@ -3,7 +3,6 @@ package store
 import (
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,7 +52,7 @@ func Report(home string, opts ReportOptions) ([]ReportRow, error) {
 	}
 
 	home = Home(home)
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureHome(home); err != nil {
 		return nil, err
 	}
 	db, err := openDB(filepath.Join(home, "blackbox.db"))
