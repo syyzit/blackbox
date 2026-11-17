@@ -13,19 +13,21 @@ func testServer(t *testing.T) *server {
 	t.Helper()
 	return &server{
 		root:      t.TempDir(),
-		allow:     splitList("echo,ls,git"),
+		allow:     splitList("echo,ls,git,go"),
 		timeout:   5 * time.Second,
 		maxOutput: 4096,
 	}
 }
 
+// The tests that really run a program use `go version`: `go test` puts the toolchain on
+// PATH on every OS, while `echo` is a shell builtin with no executable on Windows.
 func TestExecuteRunsAllowlistedCommand(t *testing.T) {
 	s := testServer(t)
-	text, failed := s.execute(callArgs{Command: "echo", Args: []string{"hello", "world"}})
+	text, failed := s.execute(callArgs{Command: "go", Args: []string{"version"}})
 	if failed {
-		t.Fatalf("echo failed: %s", text)
+		t.Fatalf("go version failed: %s", text)
 	}
-	if !strings.Contains(text, "hello world") {
+	if !strings.Contains(text, "go version go") {
 		t.Fatalf("missing output: %s", text)
 	}
 	if !strings.Contains(text, "exit 0") {
@@ -115,12 +117,14 @@ func TestProtocolRoundTrip(t *testing.T) {
 		"jsonrpc": "2.0", "id": 3, "method": "tools/call",
 		"params": map[string]any{
 			"name":      "run_command",
-			"arguments": map[string]any{"command": "echo", "args": []string{"protocol"}},
+			"arguments": map[string]any{"command": "go", "args": []string{"version"}},
 		},
 	})
 	res := read()["result"].(map[string]any)
 	content := res["content"].([]any)[0].(map[string]any)
-	if !strings.Contains(content["text"].(string), "protocol") {
+	// Match the program's own output, not the echoed command line, so a command that
+	// never started cannot pass.
+	if !strings.Contains(content["text"].(string), "go version go") {
 		t.Fatalf("tool call did not run: %+v", res)
 	}
 }
