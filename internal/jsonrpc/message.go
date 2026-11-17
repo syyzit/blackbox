@@ -34,11 +34,32 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("jsonrpc error %d: %s", e.Code, e.Message)
 }
 
-// Decode parses a single frame.
+// Decode parses a single frame, reading each field by its exact key (see exact.go).
+// A leading byte order mark is skipped, since servers commonly accept one.
 func Decode(line []byte) (*Message, error) {
-	var m Message
-	if err := json.Unmarshal(line, &m); err != nil {
+	env, err := object(bytes.TrimPrefix(bytes.TrimSpace(line), bom))
+	if err != nil {
 		return nil, fmt.Errorf("decode json-rpc: %w", err)
+	}
+	m := Message{
+		ID:     nonNull(env["id"]),
+		Params: nonNull(env["params"]),
+		Result: env["result"],
+	}
+	_ = json.Unmarshal(env["jsonrpc"], &m.JSONRPC)
+	if raw, ok := env["method"]; ok {
+		if err := json.Unmarshal(raw, &m.Method); err != nil {
+			return nil, fmt.Errorf("decode json-rpc: method: %w", err)
+		}
+	}
+	if raw := nonNull(env["error"]); len(raw) > 0 {
+		var e Error
+		if eo, err := object(raw); err == nil {
+			_ = json.Unmarshal(eo["code"], &e.Code)
+			_ = json.Unmarshal(eo["message"], &e.Message)
+			e.Data = eo["data"]
+		}
+		m.Error = &e
 	}
 	return &m, nil
 }
@@ -93,29 +114,48 @@ type ToolDefinition struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// ParseTools extracts tool definitions from a tools/list result.
+// ParseTools extracts tool definitions from a tools/list result. Fields are read by
+// exact key, so a definition cannot show the client one description and the ledger
+// another by spelling the key with different capitals.
 func ParseTools(result json.RawMessage) ([]ToolDefinition, error) {
-	var r struct {
-		Tools []ToolDefinition `json:"tools"`
-	}
-	if err := json.Unmarshal(result, &r); err != nil {
+	res, err := object(result)
+	if err != nil {
 		return nil, err
 	}
-	return r.Tools, nil
+	var raw []json.RawMessage
+	if list := nonNull(res["tools"]); len(list) > 0 {
+		if err := json.Unmarshal(list, &raw); err != nil {
+			return nil, err
+		}
+	}
+	tools := make([]ToolDefinition, 0, len(raw))
+	for _, r := range raw {
+		t, err := object(r)
+		if err != nil {
+			return nil, err
+		}
+		var d ToolDefinition
+		if name := t["name"]; len(name) > 0 {
+			if err := json.Unmarshal(name, &d.Name); err != nil {
+				return nil, err
+			}
+		}
+		_ = json.Unmarshal(t["description"], &d.Description)
+		d.InputSchema = t["inputSchema"]
+		tools = append(tools, d)
+	}
+	return tools, nil
 }
 
 // ParseResult reads resultType and the tool-level isError flag.
 // An absent resultType is treated as "complete" per the spec's compatibility rule.
 func ParseResult(result json.RawMessage) (resultType string, isError bool) {
-	var r struct {
-		ResultType string `json:"resultType"`
-		IsError    bool   `json:"isError"`
+	resultType = stringField(result, "resultType")
+	if resultType == "" {
+		resultType = "complete"
 	}
-	_ = json.Unmarshal(result, &r)
-	if r.ResultType == "" {
-		r.ResultType = "complete"
-	}
-	return r.ResultType, r.IsError
+	_ = json.Unmarshal(Field(result, "isError"), &isError)
+	return resultType, isError
 }
 
 // Usage is token accounting reported by an MCP server, when it reports any.
@@ -171,11 +211,7 @@ func (m *Message) RequestState() string {
 	if len(m.Params) == 0 {
 		return ""
 	}
-	var p struct {
-		RequestState string `json:"requestState"`
-	}
-	_ = json.Unmarshal(m.Params, &p)
-	return p.RequestState
+	return stringField(m.Params, "requestState")
 }
 
 // HasInputResponses reports whether the frame carries MRTR inputResponses.
@@ -183,13 +219,7 @@ func (m *Message) HasInputResponses() bool {
 	if len(m.Params) == 0 {
 		return false
 	}
-	var p struct {
-		InputResponses json.RawMessage `json:"inputResponses"`
-	}
-	if err := json.Unmarshal(m.Params, &p); err != nil {
-		return false
-	}
-	return len(p.InputResponses) > 0 && string(p.InputResponses) != "null"
+	return len(nonNull(Field(m.Params, "inputResponses"))) > 0
 }
 
 // ResultRequestState reads result.requestState from an input_required result.
@@ -197,11 +227,7 @@ func ResultRequestState(result json.RawMessage) string {
 	if len(result) == 0 {
 		return ""
 	}
-	var r struct {
-		RequestState string `json:"requestState"`
-	}
-	_ = json.Unmarshal(result, &r)
-	return r.RequestState
+	return stringField(result, "requestState")
 }
 
 // SubscriptionID reads params._meta["io.modelcontextprotocol/subscriptionId"].
@@ -209,21 +235,7 @@ func (m *Message) SubscriptionID() string {
 	if len(m.Params) == 0 {
 		return ""
 	}
-	var p struct {
-		Meta map[string]json.RawMessage `json:"_meta"`
-	}
-	if err := json.Unmarshal(m.Params, &p); err != nil || p.Meta == nil {
-		return ""
-	}
-	raw, ok := p.Meta["io.modelcontextprotocol/subscriptionId"]
-	if !ok {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return ""
-	}
-	return s
+	return stringField(Field(m.Params, "_meta"), "io.modelcontextprotocol/subscriptionId")
 }
 
 // ExternalID reads params._meta["ai.opencode/sessionID"], the OpenCode session id.
@@ -231,21 +243,7 @@ func (m *Message) ExternalID() string {
 	if len(m.Params) == 0 {
 		return ""
 	}
-	var p struct {
-		Meta map[string]json.RawMessage `json:"_meta"`
-	}
-	if err := json.Unmarshal(m.Params, &p); err != nil || p.Meta == nil {
-		return ""
-	}
-	raw, ok := p.Meta["ai.opencode/sessionID"]
-	if !ok {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return ""
-	}
-	return s
+	return stringField(Field(m.Params, "_meta"), "ai.opencode/sessionID")
 }
 
 // ToolName extracts params.name for tools/call frames.
@@ -253,11 +251,5 @@ func (m *Message) ToolName() string {
 	if m.Method != "tools/call" || len(m.Params) == 0 {
 		return ""
 	}
-	var p struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(m.Params, &p); err != nil {
-		return ""
-	}
-	return p.Name
+	return stringField(m.Params, "name")
 }

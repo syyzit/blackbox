@@ -310,6 +310,15 @@ the fake server (`FAKESERVER_RUGPULL=1` makes it change a tool).
 
 Every decision is written to the audit log with its mode and surfaced in the UI.
 
+In enforce mode the gate also refuses a frame it cannot read the way the server will:
+one that is not JSON-RPC, repeats a key in an object, or spells a protocol field with
+different capitals (`"Method"`, `"Arguments"`). Parsers disagree on such frames, so the
+policy would be allowing a call it has not seen. The agent gets an error saying the
+frame "cannot be checked against the policy". Well-formed clients never send these.
+
+An approval prompt shows the arguments in their canonical form. When they are long, the
+middle is cut out and the prompt says how many bytes are hidden; both ends stay visible.
+
 The bundled OpenCode plugin calls `blackbox check` before every built-in tool, so the same
 rules apply to `write`, `edit`, and `shell` without routing them through MCP. In shadow
 mode they still run; the decision is logged as `require_approval · shadow`.
@@ -517,7 +526,9 @@ into `dist/`.
 - The UI is read-only: approvals happen in the terminal that launched the recorder.
 - The UI and the HTTP proxy only answer requests whose `Host` is an IP address or
   `localhost`, which blocks DNS-rebinding attacks from web pages. Reach them by IP or
-  `localhost`, not through a custom host name.
+  `localhost`, not through a custom host name. They also refuse a request a browser
+  sends for a page on another site (a non-local `Origin`).
+- The HTTP proxy passes an upstream redirect back to the client and does not follow it.
 - The HTTP proxy refuses a request whose `Mcp-Method` / `Mcp-Name` headers disagree with
   its JSON-RPC body.
 - An approval prompt or queue wait blocks the proxied stream while it waits, bounded by

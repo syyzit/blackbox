@@ -71,6 +71,10 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 	return &HTTP{
 		upstream: u,
 		client: &http.Client{
+			// A redirect is the upstream's answer, and it is the client's to follow. If
+			// the proxy followed it, the request body and session id would go to a host
+			// nobody configured, and the recording would blame the configured one.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
 				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
@@ -147,6 +151,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(req.Header, r.Header)
+	// Let the transport negotiate compression and hand back plain bytes. With the
+	// client's Accept-Encoding passed through, a gzip response reached the client but
+	// was recorded as opaque bytes: no method, no tool definitions, no rug-pull check.
+	req.Header.Del("Accept-Encoding")
 	// Make routing explicit for the upstream and for anything watching in between.
 	if method != "" {
 		req.Header.Set("Mcp-Method", method)
