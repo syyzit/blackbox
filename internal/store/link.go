@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -33,6 +34,18 @@ func LinkExternalCall(home, externalID string, tools []string, arguments string,
 	}
 	defer db.Close()
 
+	// Choosing a recording and tagging it is one step: parallel identical calls give
+	// several hooks the same candidates, and each must claim a different one.
+	linked := false
+	err = withWriteLock(db, func(tx writeTx) error {
+		var err error
+		linked, err = linkExternalCall(tx, externalID, tools, arguments, since, until)
+		return err
+	})
+	return linked, err
+}
+
+func linkExternalCall(db writeTx, externalID string, tools []string, arguments string, since, until time.Time) (bool, error) {
 	query := `SELECT session_id, seq, call_id, args FROM events
 	           WHERE method = 'tools/call' AND direction = ? AND external_id = ''
 	             AND at >= ? AND at <= ?
@@ -87,17 +100,23 @@ func LinkExternalCall(home, externalID string, tools []string, arguments string,
 	}
 
 	// The request and its response share a call id; without one, tag the request alone.
+	var result sql.Result
 	if match.callID != "" {
-		_, err = db.Exec(
+		result, err = db.Exec(
 			`UPDATE events SET external_id = ?
 			  WHERE session_id = ? AND call_id = ? AND external_id = ''`,
 			externalID, match.session, match.callID)
 	} else {
-		_, err = db.Exec(
-			`UPDATE events SET external_id = ? WHERE session_id = ? AND seq = ?`,
+		result, err = db.Exec(
+			`UPDATE events SET external_id = ?
+			  WHERE session_id = ? AND seq = ? AND external_id = ''`,
 			externalID, match.session, match.seq)
 	}
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed > 0, err
 }
 
 // sameJSONValue compares two JSON texts by value. Missing arguments and an empty
