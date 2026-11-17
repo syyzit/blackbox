@@ -18,7 +18,6 @@ import (
 
 	"github.com/syyzit/blackbox/internal/coverage"
 	"github.com/syyzit/blackbox/internal/proxy"
-	"github.com/syyzit/blackbox/internal/redact"
 	"github.com/syyzit/blackbox/internal/store"
 	"github.com/syyzit/blackbox/internal/ui"
 )
@@ -46,7 +45,7 @@ func cmdDev(args []string) int {
 		return 2
 	}
 
-	pol, err := loadPolicy(*home, *policyPath)
+	pol, red, err := loadConfig(*home, *policyPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
@@ -91,7 +90,7 @@ func cmdDev(args []string) int {
 		Stderr:          os.Stderr,
 		SessionID:       sess.Meta.ID,
 		Sink:            sess,
-		Redactor:        redact.Default(),
+		Redactor:        red,
 		PriceInPerMTok:  *priceIn,
 		PriceOutPerMTok: *priceOut,
 		Policy:          pol,

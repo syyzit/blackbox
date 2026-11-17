@@ -12,9 +12,21 @@
     },
     {
       "tool": "*",
-      "args": "\"path\"\\s*:\\s*\"/etc/",
+      "paths": {"path": "/etc/*"},
       "action": "deny",
       "reason": "system paths are off limits"
+    },
+    {
+      "tool": "*",
+      "paths": {"*": "*/.ssh/*"},
+      "action": "deny",
+      "reason": "no SSH keys"
+    },
+    {
+      "tool": "run_command",
+      "match": {"command": "git", "args.0": "push"},
+      "action": "require_approval",
+      "reason": "pushing publishes work"
     },
     {
       "server": "*",

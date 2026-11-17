@@ -34,13 +34,32 @@ const (
 type Rule struct {
 	Server string `json:"server,omitempty"` // wildcard over the server command
 	Tool   string `json:"tool,omitempty"`   // wildcard over the tool name
-	Args   string `json:"args,omitempty"`   // regex over the raw arguments
-	Action Action `json:"action"`
-	Reason string `json:"reason,omitempty"`
+	Args   string `json:"args,omitempty"`   // regex over the canonical JSON params
+	// Match maps argument paths to globs over their values; Paths does the same for
+	// file paths, cleaned first. See fields.go. All of a rule's conditions must hold.
+	Match  map[string]string `json:"match,omitempty"`
+	Paths  map[string]string `json:"paths,omitempty"`
+	Action Action            `json:"action"`
+	Reason string            `json:"reason,omitempty"`
 
 	argsRe   *regexp.Regexp
 	serverRe *regexp.Regexp
 	toolRe   *regexp.Regexp
+	fields   []fieldMatcher
+}
+
+// compileFields prepares the rule's match and paths conditions.
+func (r *Rule) compileFields() error {
+	m, err := compileFields(r.Match, false)
+	if err != nil {
+		return err
+	}
+	p, err := compileFields(r.Paths, true)
+	if err != nil {
+		return err
+	}
+	r.fields = append(m, p...)
+	return nil
 }
 
 // Policy is the on-disk policy file.
@@ -114,6 +133,9 @@ func (p *Policy) validate() error {
 		}
 		r.serverRe = compileWildcard(r.Server)
 		r.toolRe = compileWildcard(r.Tool)
+		if err := r.compileFields(); err != nil {
+			return fmt.Errorf("policy: rule %d: %w", i, err)
+		}
 	}
 	return nil
 }
@@ -122,7 +144,12 @@ func (p *Policy) validate() error {
 type Request struct {
 	Server string
 	Tool   string
-	Args   string
+	// Args is the raw JSON the args regex sees: MCP tools/call params, or a built-in
+	// tool's input.
+	Args string
+	// Arguments is the tool's argument object for field rules. When empty it is
+	// taken from Args as MCP params ({"name":…,"arguments":{…}}).
+	Arguments json.RawMessage
 }
 
 // Decision is the outcome of evaluating a request.
@@ -139,6 +166,8 @@ func (p *Policy) Decide(r Request) Decision {
 		return Decision{Action: Allow, Mode: ModeEnforce, Rule: -1, Reason: "no policy"}
 	}
 	args, canonical := "", false
+	var arguments any
+	decoded := false
 	for i := range p.Rules {
 		rule := &p.Rules[i]
 		if !matchCompiled(rule.serverRe, rule.Server, r.Server) || !matchCompiled(rule.toolRe, rule.Tool, r.Tool) {
@@ -156,6 +185,19 @@ func (p *Policy) Decide(r Request) Decision {
 				args, canonical = CanonicalArgs(r.Args), true
 			}
 			if !re.MatchString(args) {
+				continue
+			}
+		}
+		if len(rule.Match) > 0 || len(rule.Paths) > 0 {
+			if rule.fields == nil { // a Policy built in code without Load
+				if err := rule.compileFields(); err != nil {
+					continue
+				}
+			}
+			if !decoded {
+				arguments, decoded = decodeArguments(r), true
+			}
+			if !matchFields(rule.fields, arguments) {
 				continue
 			}
 		}

@@ -211,7 +211,7 @@ func cmdRun(args []string) int {
 		return 2
 	}
 
-	pol, err := loadPolicy(*home, *policyPath)
+	pol, red, err := loadConfig(*home, *policyPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
@@ -240,7 +240,7 @@ func cmdRun(args []string) int {
 		Stderr:          os.Stderr,
 		SessionID:       sess.Meta.ID,
 		Sink:            sess,
-		Redactor:        redact.Default(),
+		Redactor:        red,
 		PriceInPerMTok:  *priceIn,
 		PriceOutPerMTok: *priceOut,
 		Policy:          pol,
@@ -309,7 +309,7 @@ func cmdHTTP(args []string) int {
 		return 2
 	}
 
-	pol, err := loadPolicy(*home, *policyPath)
+	pol, red, err := loadConfig(*home, *policyPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "blackbox:", err)
 		return 1
@@ -333,7 +333,7 @@ func cmdHTTP(args []string) int {
 		Upstream:  *upstream,
 		SessionID: sess.Meta.ID,
 		Sink:      sess,
-		Redactor:  redact.Default(),
+		Redactor:  red,
 		Policy:    pol,
 		Server:    *upstream,
 		ServerKey: sess.Meta.ServerKey,
@@ -351,6 +351,24 @@ func cmdHTTP(args []string) int {
 func isTTY() bool {
 	fi, err := os.Stdin.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// loadConfig reads the policy and the redaction rules for a recording command.
+func loadConfig(home, policyPath string) (*policy.Policy, *redact.Redactor, error) {
+	pol, err := loadPolicy(home, policyPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	red, err := loadRedactor(home)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pol, red, nil
+}
+
+// loadRedactor returns the built-in redaction rules plus <home>/redact.json.
+func loadRedactor(home string) (*redact.Redactor, error) {
+	return redact.Load(filepath.Join(store.Home(home), "redact.json"))
 }
 
 func loadPolicy(home, path string) (*policy.Policy, error) {
@@ -519,6 +537,12 @@ func cmdReplay(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	red, err := loadRedactor(*home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
+
 	fmt.Fprintf(os.Stderr, "blackbox · replay %s · %d exchanges\n", meta.ID, len(eng.Exchanges()))
 	fmt.Fprintf(os.Stderr, "blackbox · new session %s\n", sess.Meta.ID)
 
@@ -526,7 +550,7 @@ func cmdReplay(args []string) int {
 		Argv:      argv,
 		SessionID: sess.Meta.ID,
 		Sink:      sess,
-		Redactor:  redact.Default(),
+		Redactor:  red,
 		Stderr:    os.Stderr,
 	})
 	if err != nil {
@@ -667,6 +691,11 @@ func cmdShow(args []string) int {
 	fmt.Printf("command  %s\n", strings.Join(meta.Argv, " "))
 	fmt.Printf("events   %d\n\n", len(events))
 
+	red, err := loadRedactor(*home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox:", err)
+		return 1
+	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "SEQ\tT\tDIR\tSTATUS\tMS\tMETHOD\tTOOL\tID\tFRAME")
 	for _, e := range events {
@@ -680,7 +709,7 @@ func cmdShow(args []string) int {
 			dash(e.Status),
 			e.DurationMS,
 			dash(e.Method), dash(e.Tool), dash(e.ID),
-			truncate(redact.Default().String(e.Raw), 64))
+			truncate(red.String(e.Raw), 64))
 		if e.ToolDefs != nil {
 			for _, d := range e.ToolDefs {
 				flag := ""
