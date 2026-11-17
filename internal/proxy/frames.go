@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"time"
@@ -97,6 +98,22 @@ func skipLine(br *bufio.Reader) (int, error) {
 	}
 }
 
+// cutPrefix ends a cut prefix where no secret can be in progress. A secret cut in half
+// no longer matches its redaction pattern, so the half that is kept would be recorded
+// as it stands. Frames are JSON, where every secret the redactor knows lies inside a
+// string or after a key's quote, so the prefix ends at its last quote and the cut
+// string's contents are dropped. Without a quote it ends at the last whitespace, and
+// with neither nothing is kept.
+func cutPrefix(prefix []byte) []byte {
+	if i := bytes.LastIndexByte(prefix, '"'); i >= 0 {
+		return prefix[:i+1]
+	}
+	if i := bytes.LastIndexAny(prefix, " \t\r\n"); i >= 0 {
+		return prefix[:i+1]
+	}
+	return nil
+}
+
 func (p *pipeline) overLimit(total int) string {
 	return fmt.Sprintf("frame of %d bytes exceeded the %d byte recording limit", total, p.maxFrame)
 }
@@ -107,7 +124,7 @@ func (p *pipeline) overLimit(total int) string {
 func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, note string, dec *policy.Decision) {
 	prefix := head
 	if len(prefix) > recordedPrefix {
-		prefix = prefix[:recordedPrefix]
+		prefix = cutPrefix(prefix[:recordedPrefix])
 	}
 	e := event.Event{
 		SessionID: p.sessionID,
