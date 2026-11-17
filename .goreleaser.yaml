@@ -36,12 +36,10 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# GitHub's own release notes: one line per merged pull request, with its author's
+# handle. The commit-based changelog printed every author's email address.
 changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - "^Merge "
+  use: github-native
 
 release:
   draft: true # review the notes, then publish

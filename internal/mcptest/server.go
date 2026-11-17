@@ -132,6 +132,23 @@ func (s *Server) respond(w io.Writer, msg *jsonrpc.Message) error {
 			},
 			"serverInfo": map[string]any{"name": s.Name, "version": s.Version},
 		}
+	case "initialize":
+		// The handshake of protocol versions before 2026-07-28. Real clients fall back
+		// to it, so the demo server answers it too and can be tried from any of them.
+		var p struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		if p.ProtocolVersion == "" {
+			p.ProtocolVersion = "2025-11-25"
+		}
+		result = map[string]any{
+			"protocolVersion": p.ProtocolVersion,
+			"capabilities": map[string]any{
+				"tools": map[string]any{"listChanged": false},
+			},
+			"serverInfo": map[string]any{"name": s.Name, "version": s.Version},
+		}
 	case "tools/list":
 		result = map[string]any{"tools": s.Tools}
 	case "tools/call":

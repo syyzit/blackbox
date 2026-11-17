@@ -252,6 +252,23 @@ func withoutBlackboxHandlers(group gjson.Result) (string, bool) {
 	return raw, true
 }
 
+// hasBlackboxHook reports whether a settings file already registers the adapter.
+func hasBlackboxHook(settings []byte) bool {
+	if !gjson.ValidBytes(settings) {
+		return false
+	}
+	for _, event := range hookEvents {
+		for _, group := range gjson.GetBytes(settings, "hooks."+event).Array() {
+			for _, h := range group.Get("hooks").Array() {
+				if isBlackboxHandler(h) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // isBlackboxHandler recognises an entry this command wrote: a blackbox binary whose
 // first argument is "hook".
 func isBlackboxHandler(h gjson.Result) bool {

@@ -91,8 +91,13 @@ func runHook(in io.Reader, out, errw io.Writer, opts hookOptions) int {
 		fmt.Fprintln(errw, "blackbox hook: session_id and tool_name are required")
 		return 1
 	}
-	if !opts.mcp && strings.HasPrefix(h.ToolName, "mcp__") {
-		return 0
+	if strings.HasPrefix(h.ToolName, "mcp__") {
+		if h.Event != "PreToolUse" {
+			hookLinkMCPCall(h, errw, opts)
+		}
+		if !opts.mcp {
+			return 0
+		}
 	}
 
 	if h.Event == "PreToolUse" {
@@ -179,6 +184,54 @@ func hookAfter(h hookInput, errw io.Writer, opts hookOptions) int {
 		return 1
 	}
 	return 0
+}
+
+// hookLinkMCPCall ties the proxy's recording of an MCP call to this Claude Code
+// session. Claude Code does not put its session id on MCP calls, so the proxy cannot
+// know which agent session a call belongs to; the hook does, once the call is over.
+// It is best effort: a server that is not wrapped has no recording to link.
+func hookLinkMCPCall(h hookInput, errw io.Writer, opts hookOptions) {
+	tools := mcpToolNames(h.ToolName)
+	if len(tools) == 0 {
+		return
+	}
+	red, err := loadRedactor(opts.home)
+	if err != nil {
+		return // the PreToolUse path reports a broken redact.json
+	}
+	arguments := red.String(compactJSON(h.ToolInput))
+
+	now := time.Now().UTC()
+	lookback := time.Duration(h.DurationMS)*time.Millisecond + 10*time.Second
+	if h.DurationMS <= 0 {
+		lookback = 2 * time.Minute
+	}
+	// The proxy writes the response frame as it forwards it, which can be a moment
+	// after Claude Code has the result, so look twice.
+	for attempt := 0; attempt < 2; attempt++ {
+		linked, err := store.LinkExternalCall(opts.home, h.SessionID, tools, arguments, now.Add(-lookback), now.Add(time.Second))
+		if err != nil {
+			fmt.Fprintln(errw, "blackbox hook:", err)
+			return
+		}
+		if linked || attempt == 1 {
+			return
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// mcpToolNames lists the tool names the server may know an mcp__server__tool by. The
+// name does not say where the server part ends, so every split point is a candidate.
+func mcpToolNames(name string) []string {
+	rest := strings.TrimPrefix(name, "mcp__")
+	var out []string
+	for i := 0; i+2 <= len(rest); i++ {
+		if rest[i:i+2] == "__" && i > 0 && i+2 < len(rest) {
+			out = append(out, rest[i+2:])
+		}
+	}
+	return out
 }
 
 // capField replaces an oversized tool input or result with a marker, so one huge file

@@ -208,9 +208,11 @@ end, built-ins included. The UI exposes the same view through the **Trace** butt
 session that carries an agent id.
 
 Traces depend on the agent reporting its session id. OpenCode does; other hosts will need
-the same `_meta` field. Claude Code's built-in calls carry its session id (they land in
-`cc-<id>` and show up as a trace), but Claude Code does not put that id on MCP calls, so
-its MCP sessions are not merged into the trace yet.
+the same `_meta` field. Claude Code does not put its session id on MCP calls, so
+`blackbox hook` supplies it afterwards: when an MCP call finishes, the hook finds the
+proxy's recording of that call (same tool and arguments, within the call's duration) and
+tags it with the Claude Code session. With the hook installed, a Claude Code trace shows
+built-in and wrapped-MCP calls together, like the one above.
 
 ## Replay and diff
 
