@@ -13,14 +13,15 @@
 //   - the working directory and any path argument must resolve inside the root
 //   - find cannot run programs or delete files, and rg cannot run programs (--pre,
 //     --hostname-bin) or read a config file
-//   - a timeout and an output cap; the timeout holds even when the command leaves
-//     children behind, though those are not killed
+//   - a timeout and an output cap; the timeout kills the command and the processes
+//     it started
 //
 // It is not a sandbox: go and make build and run code from the repository by design.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -225,13 +226,22 @@ func (s *server) execute(a callArgs) (string, bool) {
 	cmd := exec.CommandContext(ctx, a.Command, argv...)
 	cmd.Dir = dir
 	cmd.Env = commandEnv(a.Command)
-	// Killing the command does not kill what it started (go run, make), and a child
-	// that inherited the output pipe would keep the read below waiting until it
-	// exits. WaitDelay gives up on the pipe instead.
+	// At the deadline the tree kills what the command started (go run, make) along
+	// with it. Should something escape it, a child that inherited the output pipe
+	// would keep Wait waiting until it exits; WaitDelay gives up on the pipe instead.
 	cmd.WaitDelay = waitDelay
-	out, runErr := cmd.CombinedOutput()
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	tree := newProcessTree(cmd)
+	runErr := cmd.Start()
+	if runErr == nil {
+		tree.started()
+		runErr = cmd.Wait()
+	}
+	tree.close()
 
-	text := string(out)
+	text := out.String()
 	if len(text) > s.maxOutput {
 		text = text[:s.maxOutput] + "\n… output truncated"
 	}
