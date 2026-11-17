@@ -321,9 +321,14 @@ func TestApprovalsAPI(t *testing.T) {
 		t.Fatalf("approvals = %+v", list.Approvals)
 	}
 
-	body := strings.NewReader(`{"decision":"allow","by":"ui"}`)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), body))
+	decide := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	rec = decide(`{"decision":"allow"}`)
 	if rec.Code != 200 {
 		t.Fatalf("decide status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -332,14 +337,12 @@ func TestApprovalsAPI(t *testing.T) {
 		t.Fatalf("decided = %+v, %v", got, err)
 	}
 
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), strings.NewReader(`{"decision":"deny"}`)))
+	rec = decide(`{"decision":"deny"}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second decision status %d", rec.Code)
 	}
 
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/approvals/"+strconv.FormatInt(id, 10), strings.NewReader(`{"decision":"maybe"}`)))
+	rec = decide(`{"decision":"maybe"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad decision status %d", rec.Code)
 	}
@@ -356,5 +359,82 @@ func TestServesIndex(t *testing.T) {
 	}
 	if rec.Body.Len() == 0 {
 		t.Fatal("index is empty")
+	}
+}
+
+// A page on another origin can reach a loopback port with a "simple" request, so the
+// decision endpoint must refuse anything a browser would send cross-site, on its own,
+// without relying on the listener's guard.
+func TestApprovalDecisionRejectsCrossSiteRequests(t *testing.T) {
+	const jsonType = "application/json"
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"no content type", nil, http.StatusUnsupportedMediaType},
+		{"simple request content type", map[string]string{"Content-Type": "text/plain;charset=UTF-8"}, http.StatusUnsupportedMediaType},
+		{"form content type", map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, http.StatusUnsupportedMediaType},
+		{"cross-site fetch metadata", map[string]string{"Content-Type": jsonType, "Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"same-site fetch metadata", map[string]string{"Content-Type": jsonType, "Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+		{"foreign origin", map[string]string{"Content-Type": jsonType, "Origin": "https://evil.example"}, http.StatusForbidden},
+		{"other local port", map[string]string{"Content-Type": jsonType, "Origin": "http://127.0.0.1:9999"}, http.StatusForbidden},
+		{"opaque origin", map[string]string{"Content-Type": jsonType, "Origin": "null"}, http.StatusForbidden},
+		{"same origin", map[string]string{"Content-Type": "application/json; charset=utf-8", "Origin": "http://127.0.0.1:8787", "Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"non-browser client", map[string]string{"Content-Type": jsonType}, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, session := seed(t)
+			id, err := store.CreateApproval(home, store.Approval{SessionID: session, Tool: "echo", Reason: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/approvals/"+strconv.FormatInt(id, 10),
+				strings.NewReader(`{"decision":"allow","by":"terminal"}`))
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			New(home).Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			got, err := store.ApprovalByID(home, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want != http.StatusOK {
+				if got.Status != store.ApprovalPending {
+					t.Fatalf("a rejected request decided the approval: %+v", got)
+				}
+				return
+			}
+			// The caller does not get to say who decided.
+			if got.Status != store.ApprovalApproved || got.DecidedBy != "ui" {
+				t.Fatalf("decided = %+v", got)
+			}
+		})
+	}
+}
+
+// Anything that changes state goes through POST; every other method on the API is
+// refused, so the cross-site checks above cover the whole write surface.
+func TestOnlyApprovalDecisionAcceptsWrites(t *testing.T) {
+	home, id := seed(t)
+	h := New(home).Handler()
+	for _, path := range []string{
+		"/api/sessions", "/api/sessions/" + id, "/api/sessions/" + id + "/export",
+		"/api/diff?a=" + id + "&b=" + id, "/api/search?q=x", "/api/traces", "/api/traces/x", "/api/approvals",
+	} {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+			req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s = %d, want 405", method, path, rec.Code)
+			}
+		}
 	}
 }
