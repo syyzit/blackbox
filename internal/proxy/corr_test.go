@@ -50,3 +50,33 @@ func TestResponseIDMustMatchRequestIDExactly(t *testing.T) {
 		t.Fatalf("string id was matched to the numeric request: %+v", spoof)
 	}
 }
+
+// Servers re-encode ids: Python's json.dumps escapes non-ASCII, some encoders escape
+// "/". The same string spelled differently is the same id; a number is never a string.
+func TestResponseIDMatchesByTypeAndValue(t *testing.T) {
+	cases := []struct {
+		name, req, resp string
+		match           bool
+	}{
+		{"escaped non-ASCII", `"é"`, `"é"`, true},
+		{"escaped slash", `"a/b"`, `"a\/b"`, true},
+		{"same number", `7`, `7`, true},
+		{"number answered as string", `1`, `"1"`, false},
+		{"string answered as number", `"1"`, `1`, false},
+	}
+	for _, tc := range cases {
+		for _, scope := range []string{"", "req-1"} {
+			sink := &corrSink{}
+			p := newPipeline(pipelineConfig{SessionID: "s", Sink: sink})
+			hint := routeHint{scope: scope}
+			p.record(event.ClientToServer, []byte(`{"jsonrpc":"2.0","id":`+tc.req+`,"method":"tools/list"}`), hint, nil, false)
+			p.record(event.ServerToClient, []byte(`{"jsonrpc":"2.0","id":`+tc.resp+`,"result":{"tools":[]}}`), hint, nil, false)
+			if got := sink.events[1].Method == "tools/list"; got != tc.match {
+				t.Errorf("%s (scope %q): correlated %v, want %v", tc.name, scope, got, tc.match)
+			}
+			if tc.match && len(p.pending) != 0 {
+				t.Errorf("%s (scope %q): pending entry left behind", tc.name, scope)
+			}
+		}
+	}
+}

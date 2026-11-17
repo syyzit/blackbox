@@ -650,14 +650,21 @@ type routeHint struct {
 	session string
 }
 
-// corrKey keys correlation on the id's exact JSON text, not IDString: 1 and "1" are
+// corrKey keys correlation on the id's type and value, not IDString: 1 and "1" are
 // different ids, and a peer that answers "1" must not consume the pending entry for 1
-// (a tools/list whose real response would then never be hashed).
+// (a tools/list whose real response would then never be hashed). A string is keyed by
+// its decoded value, since servers re-encode ids ("é" comes back as "é", "a/b"
+// as "a\/b"); anything else by its JSON text.
 func corrKey(scope string, id json.RawMessage) string {
-	if scope == "" {
-		return string(id)
+	key := "v:" + string(id)
+	var s string
+	if len(id) > 0 && id[0] == '"' && json.Unmarshal(id, &s) == nil {
+		key = "s:" + s
 	}
-	return scope + "\x00" + string(id)
+	if scope == "" {
+		return key
+	}
+	return scope + "\x00" + key
 }
 
 // record indexes a copy of the frame. Errors are deliberately swallowed: a broken
@@ -841,7 +848,7 @@ func (p *pipeline) abandon(scope, reason string) {
 	if scope == "" {
 		return // stdio: one long-lived connection, nothing is over yet
 	}
-	prefix := corrKey(scope, nil)
+	prefix := scope + "\x00" // every key corrKey makes for this scope starts so
 	p.mu.Lock()
 	var gone []call
 	for k, c := range p.pending {
