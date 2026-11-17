@@ -8,3 +8,10 @@ coverage.out
 
 # local dogfood config (absolute paths)
 opencode.json
+
+# binaries built into the repo root by `go build ./cmd/...`
+/blackbox
+/fakeserver
+/demoagent
+/mcpshell
+*.exe
