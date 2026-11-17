@@ -21,7 +21,7 @@ import (
 //
 // "paths" works like "match" but treats values as file paths: backslashes become
 // slashes and the path is cleaned first, so "/tmp/../etc/passwd" is checked as
-// "/etc/passwd".
+// "/etc/passwd". The glob gets the same separators, so it may be written either way.
 
 type fieldMatcher struct {
 	key   string
@@ -47,7 +47,11 @@ func compileFields(match map[string]string, isPath bool) ([]fieldMatcher, error)
 				return nil, fmt.Errorf("field path %q has an empty segment", k)
 			}
 		}
-		glob, err := regexp.Compile(wildcardPattern(match[k]))
+		pattern := match[k]
+		if isPath {
+			pattern = cleanPathPattern(pattern)
+		}
+		glob, err := regexp.Compile(wildcardPattern(pattern))
 		if err != nil {
 			return nil, fmt.Errorf("field %q: %w", k, err)
 		}
@@ -133,16 +137,32 @@ func cleanPath(s string) string {
 	return path.Clean(strings.ReplaceAll(s, `\`, "/"))
 }
 
+// cleanPathPattern brings a paths glob to the form cleanPath gives values: forward
+// slashes, no doubled or trailing slash. Without it a rule written the way Windows
+// paths are usually written (C:\Users\me\.ssh\*), or with a trailing slash, could
+// never match. The pattern is not run through path.Clean, which would resolve ".."
+// against wildcards.
+func cleanPathPattern(p string) string {
+	p = strings.ReplaceAll(p, `\`, "/")
+	for strings.Contains(p, "//") {
+		p = strings.ReplaceAll(p, "//", "/")
+	}
+	if len(p) > 1 {
+		p = strings.TrimSuffix(p, "/")
+	}
+	return p
+}
+
 // decodeArguments parses the tool arguments for field rules. Explicit arguments win;
 // otherwise they are taken from MCP tools/call params ({"name":…,"arguments":{…}}).
 func decodeArguments(r Request) any {
 	raw := r.Arguments
 	if len(raw) == 0 {
-		var params struct {
-			Arguments json.RawMessage `json:"arguments"`
-		}
+		// A map, not a struct: struct fields match keys case-insensitively, so a
+		// decoy "Arguments" member could stand in for the one the server reads.
+		var params map[string]json.RawMessage
 		if json.Unmarshal([]byte(r.Args), &params) == nil {
-			raw = params.Arguments
+			raw = params["arguments"]
 		}
 	}
 	if len(raw) == 0 {
