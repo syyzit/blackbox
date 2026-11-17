@@ -78,20 +78,56 @@ func checkPathArg(root, dir, arg string) error {
 	if v == "" {
 		return nil
 	}
-	var p string
-	switch {
-	case looksAbsolute(v):
-		p = v
-	case hasDotDot(v):
-		p = filepath.Join(dir, v)
-	default:
-		return nil
+	// raw is joined without cleaning, so a ".." after a symlink is resolved from where
+	// the link leads, as the OS would, not lexically.
+	raw := v
+	if !looksAbsolute(v) {
+		raw = dir + string(filepath.Separator) + v
 	}
-	abs, err := filepath.Abs(p)
-	if err != nil || !within(root, abs) {
+	if looksAbsolute(v) || hasDotDot(v) {
+		abs, err := filepath.Abs(raw)
+		if err != nil || !within(root, abs) {
+			return fmt.Errorf("argument %q points outside the repo root", arg)
+		}
+	}
+	// Any argument may name a path, and a symlink inside the root can lead out of it.
+	if !realWithin(root, raw) {
 		return fmt.Errorf("argument %q points outside the repo root", arg)
 	}
 	return nil
+}
+
+// realWithin reports whether p is inside root once the symlinks in both are resolved.
+// Only the part of p that exists can be resolved; the rest is taken as written, since
+// it cannot be a link yet.
+func realWithin(root, p string) bool {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	return within(realRoot, realPath(p))
+}
+
+// realPath resolves the symlinks in the deepest existing ancestor of p. Any failure
+// to resolve, not only a missing file, moves up a level: an argument that is a
+// pattern rather than a path can be a name the OS rejects outright.
+func realPath(p string) string {
+	rest := ""
+	for {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			abs, err := filepath.Abs(filepath.Join(r, rest))
+			if err != nil {
+				return ""
+			}
+			return abs
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return ""
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 // looksAbsolute also treats /x and \x as absolute on Windows, where filepath.IsAbs

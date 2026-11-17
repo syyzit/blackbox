@@ -268,18 +268,20 @@ func (s *server) execute(a callArgs) (string, bool) {
 
 func (s *server) resolve(cwd string) (string, error) {
 	dir := s.root
+	raw := s.root
 	if cwd != "" {
 		if looksAbsolute(cwd) {
-			dir = cwd
+			dir, raw = cwd, cwd
 		} else {
 			dir = filepath.Join(s.root, cwd)
+			raw = s.root + string(filepath.Separator) + cwd // see checkPathArg
 		}
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
-	if !within(s.root, abs) {
+	if !within(s.root, abs) || !realWithin(s.root, raw) {
 		return "", fmt.Errorf("cwd %q is outside the repo root", cwd)
 	}
 	return abs, nil
