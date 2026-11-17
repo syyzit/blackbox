@@ -189,6 +189,7 @@ type pipeline struct {
 	priceIn   float64
 	priceOut  float64
 	maxFrame  int
+	keepFrame int // how much of an oversized frame is recorded; recordedPrefix outside tests
 
 	agentOut    io.Writer
 	writeMu     sync.Mutex
@@ -218,6 +219,7 @@ func newPipeline(c pipelineConfig) *pipeline {
 	}
 	return &pipeline{
 		maxFrame:      c.MaxFrame,
+		keepFrame:     recordedPrefix,
 		sessionID:     c.SessionID,
 		sink:          c.Sink,
 		red:           c.Redactor,

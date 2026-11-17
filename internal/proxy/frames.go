@@ -123,8 +123,8 @@ func (p *pipeline) overLimit(total int) string {
 // note says what happened to the frame; the length of the kept prefix is appended.
 func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, note string, dec *policy.Decision) {
 	prefix := head
-	if len(prefix) > recordedPrefix {
-		prefix = cutPrefix(prefix[:recordedPrefix])
+	if len(prefix) > p.keepFrame {
+		prefix = cutPrefix(prefix[:p.keepFrame])
 	}
 	e := event.Event{
 		SessionID: p.sessionID,
