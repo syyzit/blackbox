@@ -69,10 +69,7 @@ func TestSSEParserCRLFSplitAcrossReads(t *testing.T) {
 	stream := []byte("data: {\"a\":\r\ndata: 1}\r\n\r\n")
 	for cut := 0; cut <= len(stream); cut++ {
 		var p sseParser
-		got := append(p.consume(stream[:cut]), p.consume(stream[cut:])...)
-		if payload, ok := p.end(); ok {
-			got = append(got, payload)
-		}
+		got := payloads(append(append(p.consume(stream[:cut]), p.consume(stream[cut:])...), p.end()...))
 		if len(got) != 1 || !bytes.Equal(got[0], []byte("{\"a\":\n1}")) {
 			t.Fatalf("cut at %d: got %q", cut, got)
 		}
