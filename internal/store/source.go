@@ -37,12 +37,18 @@ func SourceByName(name string) (Source, bool) {
 // IsExternalSession reports whether a session id belongs to an external source rather
 // than to an MCP connection.
 func IsExternalSession(id string) bool {
+	_, ok := SourceOfSession(id)
+	return ok
+}
+
+// SourceOfSession returns the external source a session id belongs to.
+func SourceOfSession(id string) (Source, bool) {
 	for _, s := range sources {
 		if strings.HasPrefix(id, s.Prefix) {
-			return true
+			return s, true
 		}
 	}
-	return false
+	return Source{}, false
 }
 
 func (s Source) argv() []string { return []string{s.Name, "builtins"} }

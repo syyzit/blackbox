@@ -254,10 +254,13 @@ A rule matches when all of its conditions hold:
 - `server` and `tool` are globs (`*`, `?`) over the server command and the tool name.
 - `match` maps a path into the tool's arguments to a glob over its value. Paths are
   dotted (`options.mode`, `args.0`), and `*` stands for any element or key, matching
-  if any value it reaches matches. Numbers and booleans compare as written.
+  if any value it reaches matches. Numbers and booleans compare as written. `*` and
+  `?` also match line breaks, so `*rm -rf*` catches a multi-line command.
 - `paths` works like `match` for file paths: backslashes become `/` and the path is
-  cleaned first, so `/tmp/../etc/passwd` is checked as `/etc/passwd`. Matching is
-  case-sensitive, so on Windows write the casing the agent uses.
+  cleaned first, so `/tmp/../etc/passwd` is checked as `/etc/passwd`. The pattern is
+  normalised the same way, so `C:\Users\me\.ssh\*` and `C:/Users/me/.ssh/*` are the
+  same rule and a trailing slash is ignored. Matching is case-sensitive, so on Windows
+  write the casing the agent uses.
 - `args` is a regex over the whole JSON `params`. It's useful for one-off patterns,
   but `match` and `paths` are harder to get wrong.
 
@@ -346,13 +349,20 @@ Secrets are removed from recordings, audit entries and exports before anything i
 written. The live stream between agent and server is never changed. Built-in rules
 cover:
 
-- private keys
+- private keys, PEM and PGP, including ones cut off before their END line
 - Anthropic, OpenAI, GitHub (classic and fine-grained), GitLab, AWS, Google, Stripe,
   Slack, npm and Hugging Face tokens
 - bearer tokens and JWTs
-- passwords in URLs (`postgres://app:[REDACTED:password]@db/prod`)
-- values assigned to keys like `password`, `token`, `secret`, `api_key` or
-  `private_key`
+- passwords in URLs (`postgres://app:[REDACTED:password]@db/prod`,
+  `redis://:[REDACTED:password]@cache`)
+- values assigned to keys like `password`, `token`, `secret`, `api_key`,
+  `private_key` or `aws_secret_access_key`. A quoted value is removed up to its
+  closing quote, also when the quotes are escaped because the JSON sits inside a JSON
+  string. An `Authorization` header keeps its scheme
+  (`Authorization: Basic [REDACTED:secret]`), and a number becomes a string
+  (`"token":"[REDACTED:secret]"`).
+
+A recorded frame that was valid JSON is still valid JSON after redaction.
 
 Add your own formats in `~/.blackbox/redact.json`. They run before the built-in rules:
 
@@ -407,7 +417,9 @@ DECISION  TOOL  RECORDED    ARGS
 deny      fail  tool_error  {"name":"fail","arguments":{}}
 ```
 
-Add `--fail-on-deny` to make it a CI gate.
+Add `--fail-on-deny` to make it a CI gate. Sessions of built-in tools (`oc-…`, `cc-…`)
+are evaluated the way `blackbox check` evaluates them: against the tool's input, with
+the source name (`opencode`, `claude-code`) as the server.
 
 ## Coverage: what the recording might have missed
 

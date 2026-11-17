@@ -68,6 +68,16 @@ func TestCheckGitReadOnlyForms(t *testing.T) {
 		{"diff", "--output=/tmp/x"},
 		{"log", "--output", "x"},
 		{"diff", "--ext-diff"},
+		{"show", "--textconv"},
+		// git accepts unambiguous abbreviations of long options.
+		{"diff", "--ext"},
+		{"diff", "--outp=x"},
+		{"show", "--textc"},
+		// Both start a program the repository config can name.
+		{"status", "--help"},
+		{"log", "-1", "--help"},
+		{"log", "--show-signature"},
+		{"log", "--show-sig"},
 	}
 	for _, c := range denied {
 		if err := checkGit(c); err == nil {
@@ -90,7 +100,9 @@ func TestCheckGitReadOnlyForms(t *testing.T) {
 		{"remote", "-v"},
 		{"remote", "get-url", "origin"},
 		{"diff", "--stat"},
+		{"diff", "--text"}, // an option of its own, not an abbreviated --textconv
 		{"log", "--oneline", "-5"},
+		{"log", "--show-notes"},
 	}
 	for _, c := range allowed {
 		if err := checkGit(c); err != nil {
@@ -104,6 +116,18 @@ func TestGitPrefixDisablesRepoConfiguredPrograms(t *testing.T) {
 	for _, want := range []string{"core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("git diff prefix %q is missing %q", got, want)
+		}
+	}
+	// blame applies textconv unless told not to.
+	if got := strings.Join(gitPrefix("blame"), " "); !strings.Contains(got, "blame --no-textconv") {
+		t.Errorf("git blame prefix %q is missing --no-textconv", got)
+	}
+	for _, sub := range []string{"status", "log", "blame"} {
+		got := strings.Join(gitPrefix(sub), " ")
+		for _, want := range []string{"core.fsmonitor=false", "core.hooksPath=", "log.showSignature=false"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("git %s prefix %q is missing %q", sub, got, want)
+			}
 		}
 	}
 }

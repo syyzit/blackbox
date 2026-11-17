@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -95,7 +99,12 @@ func checkGit(args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	for _, a := range rest {
-		if a == "--output" || strings.HasPrefix(a, "--output=") || a == "--ext-diff" || a == "--textconv" {
+		if a == "--help" {
+			// git turns this into `git help`, which starts whatever viewer the
+			// config names (man.<tool>.path, browser.<tool>.cmd).
+			return fmt.Errorf("git %s --help is not allowed: it runs an external viewer", sub)
+		}
+		if isForbiddenGitOption(a) {
 			return fmt.Errorf("git %s %s is not allowed: it writes files or runs external programs", sub, a)
 		}
 	}
@@ -110,15 +119,108 @@ func checkGit(args []string) error {
 	return nil
 }
 
-// gitPrefix runs every git command with repository-configured programs switched off,
-// since the agent can edit .git/config through the file tools.
+// forbiddenGitOptions write files (--output) or run configured programs: external
+// diff and textconv drivers, and the signature verifier (gpg.program).
+var forbiddenGitOptions = []string{"--output", "--ext-diff", "--textconv", "--show-signature"}
+
+// isForbiddenGitOption also catches abbreviations, which git accepts for long options
+// (--ext, --outp=x). "--text" is an option of its own, not a short --textconv.
+func isForbiddenGitOption(arg string) bool {
+	name := arg
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	if len(name) < 3 || !strings.HasPrefix(name, "--") || name == "--text" {
+		return false
+	}
+	for _, opt := range forbiddenGitOptions {
+		if strings.HasPrefix(opt, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitSafeConfig overrides, for one command, the settings that would make git run a
+// program the repository chooses: the fsmonitor hook, hooks in general (git status
+// rewrites the index and then runs post-index-change), and signature verification
+// while listing commits. The agent can edit .git/config and .git/hooks through the
+// file tools, and the command line wins over both.
+func gitSafeConfig() []string {
+	return []string{
+		"--no-pager",
+		"-c", "core.fsmonitor=false",
+		"-c", "core.hooksPath=" + os.DevNull,
+		"-c", "log.showSignature=false",
+	}
+}
+
+// gitEnv keeps git from rewriting the index as a side effect of reading it.
+func gitEnv() []string {
+	return append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+}
+
+// gitPrefix runs every git command with repository-configured programs switched off.
 func gitPrefix(sub string) []string {
-	pre := []string{"-c", "core.fsmonitor=false"}
+	pre := gitSafeConfig()
 	switch sub {
 	case "diff", "log", "show":
 		return append(pre, sub, "--no-ext-diff", "--no-textconv")
+	case "blame":
+		return append(pre, sub, "--no-textconv") // blame applies textconv by default
 	}
 	return append(pre, sub)
+}
+
+// repoProgramKeys are the settings that name a program by a key the command line
+// cannot override in advance, because the key contains a name of the repository's
+// choosing (filter.<name>.clean), or that should keep working when the user set them
+// (gpg.program). Names are as git prints them: lower case outside the subsection.
+const repoProgramKeys = `^(filter\..*\.(clean|smudge|process)|diff\..*\.(textconv|command)|diff\.external|gpg\.(.*\.)?program)$`
+
+// checkGitConfig refuses to run git in dir when the repository's own configuration
+// (.git/config, a worktree's config, or a file either includes) defines a filter, a
+// diff driver or a signature program. .gitattributes can route any file through such
+// a driver, and status, diff and blame would then run it.
+//
+// Only the repository's scopes count: the user's and the system's configuration are
+// not the agent's to edit, and often define a filter themselves (git-lfs).
+func checkGitConfig(ctx context.Context, dir, sub string) error {
+	args := append(gitSafeConfig(), "config", "--show-scope", "--includes", "--name-only", "--get-regexp", repoProgramKeys)
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitEnv()
+	cmd.WaitDelay = waitDelay
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil // no such key in any scope
+		}
+		// Without an answer, assume the worst rather than run git unchecked.
+		return fmt.Errorf("git %s is not allowed: the repository config could not be checked: %s", sub, firstLine(string(out), err.Error()))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		scope, key, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if !ok {
+			continue
+		}
+		if scope == "local" || scope == "worktree" {
+			return fmt.Errorf("git %s is not allowed: the repository config sets %s, which names a program git would run", sub, key)
+		}
+	}
+	return nil
+}
+
+func firstLine(s, fallback string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // git branch creates, renames or deletes branches unless it is listing. Listing is

@@ -320,7 +320,8 @@ func CanonicalArgs(raw string) string {
 	return strings.TrimRight(buf.String(), "\n")
 }
 
-// wildcard matches a glob where * matches any run of characters and ? matches one.
+// wildcard matches a glob where * matches any run of characters and ? matches one,
+// newlines included.
 func wildcard(pattern, s string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
@@ -334,7 +335,9 @@ func wildcard(pattern, s string) bool {
 
 func wildcardPattern(pattern string) string {
 	var b strings.Builder
-	b.WriteString("^")
+	// (?s) lets * and ? cross line breaks, so a newline in a value cannot hide the
+	// rest of it from a rule.
+	b.WriteString("(?s)^")
 	for _, r := range pattern {
 		switch r {
 		case '*':
