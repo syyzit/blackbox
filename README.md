@@ -126,6 +126,7 @@ afterwards.
 - **Failure behaviour.** A recording error never blocks a tool. A `policy.json` or
   `redact.json` that cannot be parsed blocks every call until it is fixed, the same as
   `blackbox check`.
+- **Oversized input.** A call whose hook input exceeds 16 MB cannot be checked, so it is denied while an enforced policy has any rule or default other than `allow`.
 
 ## Record
 
