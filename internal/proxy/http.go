@@ -148,8 +148,10 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.rec.record(event.ClientToServer, body, hint, dec, false)
 	}
 	// Whatever happens below, a request this exchange did not answer is over when the
-	// exchange is.
-	failure := "upstream sent no JSON-RPC response to this request"
+	// exchange is. The text claims no more than that: with streamable HTTP the response
+	// can still arrive on another exchange (a resumed GET stream), which the proxy
+	// cannot tell from a server that never answers.
+	failure := "no JSON-RPC response arrived on this HTTP exchange"
 	defer func() { h.rec.abandon(hint.scope, failure) }()
 
 	target := *h.upstream
@@ -189,7 +191,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	failure = fmt.Sprintf("upstream answered HTTP %d without a JSON-RPC response to this request", resp.StatusCode)
+	failure = fmt.Sprintf("no JSON-RPC response arrived on this HTTP exchange (HTTP %d)", resp.StatusCode)
 
 	copyHeaders(w.Header(), resp.Header)
 	w.Header().Del("Content-Length") // the body may be redacted/re-encoded downstream
