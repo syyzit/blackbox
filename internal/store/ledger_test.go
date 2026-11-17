@@ -157,6 +157,55 @@ func TestLedgerSeesExternalAccept(t *testing.T) {
 	}
 }
 
+// Another process's write can land within the filesystem's timestamp granularity, so
+// the file keeps the modification time this process last saw. That write must still
+// be noticed, not only after the next change.
+func TestLedgerSeesWriteWithUnchangedModTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tooldefs.json")
+	mustLoad(t, path).Observe("srv", "read_file", "aaaa")
+
+	running := mustLoad(t, path)
+	seen, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustLoad(t, path).Observe("srv", "read_file", "bbbb")
+	if err := os.Chtimes(path, seen.ModTime(), seen.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	if !running.IsPending("srv", "read_file") {
+		t.Fatal("running ledger missed a write that kept the modification time")
+	}
+
+	// The same, for a write that also keeps the size: only the file's identity
+	// changed, because writers replace the file by rename.
+	path2 := filepath.Join(t.TempDir(), "tooldefs.json")
+	mustLoad(t, path2).Observe("srv", "read_file", "aaaa")
+	running = mustLoad(t, path2)
+	seen, err = os.Stat(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := path2 + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Replace(string(b), "aaaa", "cccc", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path2); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path2, seen.ModTime(), seen.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := running.Known("srv", "read_file"); h != "cccc" {
+		t.Fatalf("running ledger missed a same-size write: approved hash %q", h)
+	}
+}
+
 func TestCorruptLedgerFailsClosed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tooldefs.json")
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
