@@ -29,7 +29,7 @@ func TestTraceMergesSources(t *testing.T) {
 	}
 
 	// Built-in traffic from the plugin, same agent session.
-	if err := AppendExternal(home, "ses_trace", []string{"opencode", "builtins"}, []event.Event{
+	if err := AppendExternal(home, OpenCode, "ses_trace", []event.Event{
 		{Direction: event.ClientToServer, Method: "tools/call", Tool: "shell", Status: event.StatusPending, At: base.Add(2 * time.Second), Raw: `{}`},
 		{Direction: event.ServerToClient, Method: "tools/call", Tool: "shell", Status: event.StatusOK, At: base.Add(2*time.Second + 100*time.Millisecond), Raw: `{}`},
 	}); err != nil {

@@ -53,6 +53,21 @@ func cmdIngest(args []string) int {
 		fmt.Fprintln(os.Stderr, "blackbox: ingest: sessionId and tool are required")
 		return 1
 	}
+	src, ok := store.SourceByName(p.Source)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "blackbox: ingest: unknown source %q\n", p.Source)
+		return 1
+	}
+	if err := recordExternalCall(*home, src, p); err != nil {
+		fmt.Fprintln(os.Stderr, "blackbox: ingest:", err)
+		return 1
+	}
+	return 0
+}
+
+// recordExternalCall writes one finished tool call as a tools/call request and response
+// pair in the source's session for p.SessionID.
+func recordExternalCall(home string, src store.Source, p ingestPayload) error {
 	if p.At.IsZero() {
 		p.At = time.Now().UTC()
 	}
@@ -61,10 +76,9 @@ func cmdIngest(args []string) int {
 		duration = 0
 	}
 
-	red, err := loadRedactor(*home)
+	red, err := loadRedactor(home)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "blackbox:", err)
-		return 1
+		return err
 	}
 	callID := p.CallID
 	if callID == "" {
@@ -135,11 +149,7 @@ func cmdIngest(args []string) int {
 		},
 	}
 
-	if err := store.AppendExternal(*home, p.SessionID, []string{"opencode", "builtins"}, events); err != nil {
-		fmt.Fprintln(os.Stderr, "blackbox: ingest:", err)
-		return 1
-	}
-	return 0
+	return store.AppendExternal(home, src, p.SessionID, events)
 }
 
 func compactJSON(raw json.RawMessage) string {

@@ -46,6 +46,9 @@ gates risky tools before they execute. Local-first, single binary, no cloud, no 
 - **Editor plug-in**: the bundled OpenCode plugin records built-in tool calls
   (`shell`, `read`, `write`, `edit`) through `blackbox ingest`, skipping MCP tools so
   nothing is counted twice.
+- **Claude Code hooks**: `blackbox hook install` registers one command that records
+  Claude Code's built-in tools (`Bash`, `Read`, `Edit`, `Write`, ...) and applies the
+  policy to them before they run.
 - **Traces**: one timeline per agent session, merging MCP and built-in frames, with
   `diff` comparing whole agent runs rather than single connections.
 
@@ -93,6 +96,36 @@ If you prefer to edit by hand, the result is just a command rewrite:
   }
 }
 ```
+
+### Claude Code: built-in tools too
+
+Wrapping MCP servers does not cover Claude Code's own tools (`Bash`, `Read`, `Edit`,
+`Write`, ...), which never touch an MCP server. Claude Code's hooks do:
+
+```sh
+blackbox hook install              # this project, for you: .claude/settings.local.json
+blackbox hook install -scope user  # every project: ~/.claude/settings.json
+blackbox hook install -dry-run     # show the result, write nothing
+blackbox hook install -remove      # take it out again
+```
+
+This registers `blackbox hook` for `PreToolUse`, `PostToolUse` and `PostToolUseFailure`.
+Your other hooks and settings are left as they are, an existing file is backed up first,
+and installing twice does not register it twice. Start a new Claude Code session
+afterwards.
+
+- **Recording.** Every finished call lands in a session named `cc-<claude-session-id>`,
+  with its input, result or error, and duration. Subagent calls are included.
+- **Policy.** The same `policy.json` applies, with `claude-code` as the server name. A
+  `deny` blocks the call and gives Claude the reason. A `require_approval` opens Claude
+  Code's own permission prompt; if the call then runs, the audit row is marked approved.
+  An allowed call is passed through silently, so your Claude Code permission rules still
+  apply: the policy can tighten them, never loosen them.
+- **MCP tools** are skipped by default, since a wrapped server is already recorded by
+  the proxy. Add `-mcp` to cover servers you have not wrapped.
+- **Failure behaviour.** A recording error never blocks a tool. A `policy.json` or
+  `redact.json` that cannot be parsed blocks every call until it is fixed, the same as
+  `blackbox check`.
 
 ## Record
 
@@ -175,7 +208,9 @@ end, built-ins included. The UI exposes the same view through the **Trace** butt
 session that carries an agent id.
 
 Traces depend on the agent reporting its session id. OpenCode does; other hosts will need
-the same `_meta` field.
+the same `_meta` field. Claude Code's built-in calls carry its session id (they land in
+`cc-<id>` and show up as a trace), but Claude Code does not put that id on MCP calls, so
+its MCP sessions are not merged into the trace yet.
 
 ## Replay and diff
 
@@ -287,6 +322,11 @@ audit row ends up `approved=true` (or a rejection note) instead of staying pendi
   { "action": "blackbox", "resource": "*", "effect": "ask" }
 ]
 ```
+
+Claude Code gets the same treatment through `blackbox hook`; see
+[Claude Code: built-in tools too](#claude-code-built-in-tools-too). There, a rejected
+prompt leaves the audit row unapproved without a rejection note: the hook only learns
+that a call ran, not that a prompt was declined.
 
 ## Redaction
 

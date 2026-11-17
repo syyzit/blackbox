@@ -18,11 +18,11 @@ func TestAppendExternalContinuesSequence(t *testing.T) {
 		{Direction: event.ClientToServer, Method: "tools/call", Tool: "bash", Status: event.StatusPending, At: now, Args: `{"command":"echo hi"}`, Raw: `{}`},
 		{Direction: event.ServerToClient, Method: "tools/call", Tool: "bash", Status: event.StatusOK, At: now, Result: `{"output":"hi"}`, Raw: `{}`},
 	}
-	if err := AppendExternal(home, "ses_abc", []string{"opencode", "builtins"}, events); err != nil {
+	if err := AppendExternal(home, OpenCode, "ses_abc", events); err != nil {
 		t.Fatal(err)
 	}
 	// A second call in the same external session must continue the sequence, not reset it.
-	if err := AppendExternal(home, "ses_abc", []string{"opencode", "builtins"}, events); err != nil {
+	if err := AppendExternal(home, OpenCode, "ses_abc", events); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func TestAppendExternalContinuesSequence(t *testing.T) {
 
 func TestRecordExternalDecision(t *testing.T) {
 	home := t.TempDir()
-	err := RecordExternalDecision(home, "ses_dec", policy.DecisionRecord{
+	err := RecordExternalDecision(home, OpenCode, "ses_dec", policy.DecisionRecord{
 		Server: "opencode", Tool: "shell", Action: policy.RequireApproval,
 		Mode: policy.ModeShadow, Reason: "built-in shell", At: time.Now().UTC(),
 	})
@@ -90,7 +90,7 @@ func TestEventsBetweenSeesOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := AppendExternal(home, "ses_x", []string{"opencode", "builtins"}, []event.Event{{
+	if err := AppendExternal(home, OpenCode, "ses_x", []event.Event{{
 		Direction: event.ClientToServer, Method: "tools/call", Tool: "write",
 		Status: event.StatusPending, At: base.Add(time.Second), Args: `{"path":"a.go"}`, Raw: `{}`,
 	}}); err != nil {
@@ -113,7 +113,7 @@ func TestEventsBetweenSeesOtherSessions(t *testing.T) {
 
 func TestResolveDecision(t *testing.T) {
 	home := t.TempDir()
-	err := RecordExternalDecision(home, "ses_approve", policy.DecisionRecord{
+	err := RecordExternalDecision(home, OpenCode, "ses_approve", policy.DecisionRecord{
 		Server: "opencode", Tool: "shell", CallID: "call-9",
 		Action: policy.RequireApproval, Mode: policy.ModeEnforce,
 		Reason: "built-in shell", At: time.Now().UTC(),
@@ -122,7 +122,7 @@ func TestResolveDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ResolveDecision(home, "ses_approve", "call-9", true, " (approved via permission flow)"); err != nil {
+	if err := ResolveDecision(home, OpenCode, "ses_approve", "call-9", true, " (approved via permission flow)"); err != nil {
 		t.Fatal(err)
 	}
 	recs, err := Decisions(home, "ses_approve")
@@ -133,7 +133,7 @@ func TestResolveDecision(t *testing.T) {
 		t.Fatalf("decision was not resolved: %+v", recs)
 	}
 
-	if err := ResolveDecision(home, "ses_approve", "missing", true, ""); err == nil {
+	if err := ResolveDecision(home, OpenCode, "ses_approve", "missing", true, ""); err == nil {
 		t.Fatal("expected an error for an unknown call id")
 	}
 }

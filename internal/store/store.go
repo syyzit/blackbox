@@ -727,9 +727,10 @@ func resolveID(db *sql.DB, prefix string) (string, error) {
 	if prefix == "" {
 		return "", errors.New("store: empty session id")
 	}
+	// A prefix may leave out the source prefix of an external session (oc-, cc-).
 	rows, err := db.Query(
-		`SELECT id FROM sessions WHERE id = ? OR id LIKE ? OR id LIKE ? LIMIT 4`,
-		prefix, prefix+"%", "oc-"+prefix+"%")
+		`SELECT id FROM sessions WHERE id = ? OR id LIKE ? OR id LIKE ? OR id LIKE ? LIMIT 4`,
+		prefix, prefix+"%", OpenCode.Prefix+prefix+"%", ClaudeCode.Prefix+prefix+"%")
 	if err != nil {
 		return "", err
 	}

@@ -3,11 +3,43 @@ package store
 import (
 	"fmt"
 	"path/filepath"
+
+	"github.com/syyzit/blackbox/internal/policy"
 )
+
+// ApprovePending marks a call's enforced require_approval decision as approved, when
+// it has one that is still unanswered. It reports whether a decision was updated, so a
+// caller that sees every finished call can use it without knowing how each was decided.
+func ApprovePending(home string, src Source, sessionID, callID, note string) (bool, error) {
+	if callID == "" {
+		return false, nil
+	}
+	db, err := openHomeDB(home)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+
+	result, err := db.Exec(
+		`UPDATE policy_decisions
+		    SET approved = 1, reason = reason || ?
+		  WHERE id = (
+		        SELECT id FROM policy_decisions
+		         WHERE session_id = ? AND call_id = ?
+		           AND action = ? AND mode = ? AND approved = 0
+		         ORDER BY id DESC LIMIT 1)`,
+		note, ExternalID(src.Prefix, sessionID), callID,
+		string(policy.RequireApproval), string(policy.ModeEnforce))
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows > 0, err
+}
 
 // ResolveDecision records the human's answer to a require_approval decision, matched by
 // the tool call id that produced it.
-func ResolveDecision(home, sessionID, callID string, approved bool, note string) error {
+func ResolveDecision(home string, src Source, sessionID, callID string, approved bool, note string) error {
 	if callID == "" {
 		return fmt.Errorf("store: resolve needs a call id")
 	}
@@ -21,7 +53,7 @@ func ResolveDecision(home, sessionID, callID string, approved bool, note string)
 	}
 	defer db.Close()
 
-	id := ExternalID("oc-", sessionID)
+	id := ExternalID(src.Prefix, sessionID)
 	result, err := db.Exec(
 		`UPDATE policy_decisions
 		    SET approved = ?, reason = reason || ?

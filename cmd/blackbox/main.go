@@ -70,6 +70,8 @@ func run(args []string) int {
 		return cmdIngest(args[1:])
 	case "check":
 		return cmdCheck(args[1:])
+	case "hook":
+		return cmdHook(args[1:])
 	case "trace":
 		return cmdTrace(args[1:])
 	case "resolve":
@@ -152,6 +154,12 @@ Usage:
 
   blackbox check [-home dir] < check.json
         Evaluate the policy for a built-in tool call (exit 0 allow, 1 deny).
+
+  blackbox hook [-home dir] [-mcp] < hook-event.json
+        Claude Code adapter: records built-in tool calls and applies the policy
+        to them. Run by Claude Code's hooks, not by hand.
+  blackbox hook install [-scope local|project|user] [-remove] [-dry-run]
+        Register the adapter in a Claude Code settings file.
 
   blackbox trace [agent-session-id]
         Merge MCP and built-in frames into one timeline per agent session.

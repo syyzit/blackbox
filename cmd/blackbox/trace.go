@@ -29,7 +29,7 @@ func cmdTrace(args []string) int {
 			return 1
 		}
 		if len(traces) == 0 {
-			fmt.Println("no traces recorded yet (trace ids come from agent sessions, e.g. OpenCode ses_…)")
+			fmt.Println("no traces recorded yet (trace ids come from agent sessions, e.g. OpenCode ses_… or a Claude Code session id)")
 			return 0
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -60,7 +60,7 @@ func cmdTrace(args []string) int {
 	fmt.Fprintln(w, "T\tSRC\tSTATUS\tTOOL\tMS")
 	for _, e := range tr.Events {
 		src := "mcp"
-		if strings.HasPrefix(e.SessionID, "oc-") {
+		if store.IsExternalSession(e.SessionID) {
 			src = "builtin"
 		}
 		offset := e.At.Sub(tr.StartedAt).Round(time.Millisecond)
