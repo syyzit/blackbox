@@ -24,8 +24,11 @@ type Ledger struct {
 	mu   sync.Mutex
 	path string
 	data ledgerData
-	// cleared remembers pending entries this process resolved, so a merge with an
-	// older file on disk does not bring them back.
+	// cleared remembers pending entries this process saw reverted and has not yet
+	// removed from disk, so a merge with the file does not bring them back. It is
+	// emptied once a write has gone through: after that the file no longer has them,
+	// and a pending entry with the same hash is a new change, ours or another
+	// process's, that must not be erased.
 	cleared map[string]string
 	// dirty is set when a definition was remembered that is not on disk yet.
 	dirty bool
@@ -60,15 +63,36 @@ type PendingChange struct {
 // LoadLedger reads the ledger. A missing file is a fresh ledger; a corrupt one is an
 // error, because silently starting over would forget every approved tool definition.
 func LoadLedger(path string) (*Ledger, error) {
+	l := &Ledger{path: path, cleared: map[string]string{}}
+	unlock := lockLedgerForRead(path)
+	defer unlock()
+	if info, err := os.Stat(path); err == nil {
+		l.lastMod = info.ModTime()
+	}
 	d, err := readLedger(path)
 	if err != nil {
 		return nil, err
 	}
-	l := &Ledger{path: path, data: d, cleared: map[string]string{}}
-	if info, err := os.Stat(path); err == nil {
-		l.lastMod = info.ModTime()
-	}
+	l.data = d
 	return l, nil
+}
+
+// lockLedgerForRead takes the ledger lock for a read. Writers replace the file by
+// rename while holding it; on Windows a reader's open handle makes that rename fail
+// and a read during it fails, so readers must not overlap a writer.
+//
+// The lock is not re-entrant: callers must not already hold it. When it cannot be
+// taken (no home directory yet, or a read-only one) the read goes ahead without it,
+// which is no worse than not locking and keeps read-only commands working.
+func lockLedgerForRead(path string) func() {
+	if path == "" {
+		return func() {}
+	}
+	unlock, err := lockLedger(path)
+	if err != nil {
+		return func() {}
+	}
+	return unlock
 }
 
 func readLedger(path string) (ledgerData, error) {
@@ -124,24 +148,34 @@ func (l *Ledger) Observe(server, tool, hash string) bool {
 	case approved == hash:
 		pending, ok := l.data.Pending[server][tool]
 		if !ok {
-			if l.dirty {
-				_ = l.saveLocked()
-			}
+			l.flushLocked()
 			return false
 		}
 		l.cleared[server+"\x00"+tool] = pending
 		deleteNested(l.data.Pending, server, tool)
 	default:
 		if l.data.Pending[server][tool] == hash {
-			if l.dirty {
-				_ = l.saveLocked()
-			}
+			l.flushLocked()
 			return true
 		}
+		// The server changed again after a revert this process has not managed to
+		// write yet: the newest observation wins.
+		delete(l.cleared, server+"\x00"+tool)
 		setNested(l.data.Pending, server, tool, hash)
 	}
-	_ = l.saveLocked()
+	l.dirty = true
+	l.flushLocked()
 	return seen && approved != hash
+}
+
+// flushLocked writes unsaved state. A failed write is not reported: Observe's caller
+// is relaying a tools/list and has nothing useful to do with it. What was observed
+// stays in memory, so this process keeps answering correctly, and the ledger stays
+// dirty so the next call tries again.
+func (l *Ledger) flushLocked() {
+	if l.dirty {
+		_ = l.saveLocked()
+	}
 }
 
 // Accept approves pending changes. An empty server matches every server, and no tools
@@ -189,6 +223,7 @@ func (l *Ledger) Accept(server string, tools ...string) ([]PendingChange, error)
 	if err := l.writeLocked(); err != nil {
 		return nil, err
 	}
+	l.cleared = map[string]string{}
 	l.touchLocked()
 	return accepted, nil
 }
@@ -252,6 +287,13 @@ func (l *Ledger) refreshLocked() {
 	if err != nil || !info.ModTime().After(l.lastMod) {
 		return
 	}
+	// The caller holds l.mu but never the file lock, which is not re-entrant.
+	unlock := lockLedgerForRead(l.path)
+	defer unlock()
+	// Stat again under the lock, so the time remembered is that of the file read.
+	if locked, err := os.Stat(l.path); err == nil {
+		info = locked
+	}
 	disk, err := readLedger(l.path)
 	if err != nil {
 		return // keep the state we have; the next write will surface the error
@@ -284,6 +326,10 @@ func (l *Ledger) saveLocked() error {
 	if err := l.writeLocked(); err != nil {
 		return err
 	}
+	// The file now reflects every revert this process saw. Keeping the entries
+	// would delete the same hash again on every later merge, including after the
+	// server changed to it once more or another process recorded it as pending.
+	l.cleared = map[string]string{}
 	l.dirty = false
 	l.touchLocked()
 	return nil
