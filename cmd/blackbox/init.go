@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -81,6 +82,7 @@ func cmdInit(args []string) int {
 
 	if len(found) == 0 {
 		fmt.Println("no MCP servers found in known config files")
+		claudeCodeHookHint(wd)
 		return 0
 	}
 
@@ -107,6 +109,7 @@ func cmdInit(args []string) int {
 		fmt.Println("nothing changed. wrap with:")
 		fmt.Println("  blackbox init -wrap all")
 		fmt.Println("  blackbox init -wrap name1,name2")
+		claudeCodeHookHint(wd)
 		return 0
 	}
 
@@ -184,5 +187,35 @@ func cmdInit(args []string) int {
 		}
 		fmt.Printf("wrote %s (backup %s)\n", cfg.Path, backup)
 	}
+	claudeCodeHookHint(wd)
 	return 0
+}
+
+// claudeCodeHookHint points Claude Code users at the hook, since wrapping MCP servers
+// leaves the agent's built-in tools unrecorded. It stays quiet when Claude Code is not
+// in use here or the hook is already installed.
+func claudeCodeHookHint(wd string) {
+	var settings []string
+	used := false
+	for _, scope := range []string{"local", "project", "user"} {
+		path, err := hookSettingsPath(scope, wd)
+		if err != nil {
+			continue
+		}
+		settings = append(settings, path)
+		if _, err := os.Stat(filepath.Dir(path)); err == nil {
+			used = true
+		}
+	}
+	if !used {
+		return
+	}
+	for _, path := range settings {
+		if data, err := os.ReadFile(path); err == nil && hasBlackboxHook(data) {
+			return
+		}
+	}
+	fmt.Println()
+	fmt.Println("Claude Code's own tools (Bash, Read, Edit, ...) are not MCP calls. Record them with:")
+	fmt.Println("  blackbox hook install")
 }
