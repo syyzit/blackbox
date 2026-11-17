@@ -48,7 +48,7 @@ func (p *pipeline) oversize(dst io.Writer, br *bufio.Reader, dir event.Direction
 		total += n
 		reason := fmt.Sprintf("frame of %d bytes exceeds the %d byte limit and cannot be checked", total, p.maxFrame)
 		dec := &policy.Decision{Action: policy.Deny, Mode: policy.ModeEnforce, Rule: -1, Reason: reason}
-		p.recordOversize(dir, head, total, dec)
+		p.recordOversize(dir, head, total, p.overLimit(total), dec)
 		if p.agentOut != nil {
 			resp := syntheticError(nil, reason)
 			if err := p.write(p.agentOut, append(resp, '\n'), true); err != nil {
@@ -81,7 +81,7 @@ func (p *pipeline) oversize(dst io.Writer, br *bufio.Reader, dir event.Direction
 		readErr = err
 		break
 	}
-	p.recordOversize(dir, head, total, nil)
+	p.recordOversize(dir, head, total, p.overLimit(total), nil)
 	return readErr
 }
 
@@ -97,9 +97,14 @@ func skipLine(br *bufio.Reader) (int, error) {
 	}
 }
 
+func (p *pipeline) overLimit(total int) string {
+	return fmt.Sprintf("frame of %d bytes exceeded the %d byte recording limit", total, p.maxFrame)
+}
+
 // recordOversize keeps the beginning of an oversized frame as evidence. It cannot be
 // parsed, so it carries no method or tool.
-func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, dec *policy.Decision) {
+// note says what happened to the frame; the length of the kept prefix is appended.
+func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, note string, dec *policy.Decision) {
 	prefix := head
 	if len(prefix) > recordedPrefix {
 		prefix = prefix[:recordedPrefix]
@@ -111,7 +116,7 @@ func (p *pipeline) recordOversize(dir event.Direction, head []byte, total int, d
 		Direction: dir,
 		Raw:       p.red.String(string(prefix)) + "…",
 		Size:      total,
-		Error:     fmt.Sprintf("frame of %d bytes exceeded the %d byte recording limit; only the first %d bytes are kept", total, p.maxFrame, len(prefix)),
+		Error:     fmt.Sprintf("%s; only the first %d bytes are kept", note, len(prefix)),
 	}
 	if dec != nil {
 		e.Decision = string(dec.Action)

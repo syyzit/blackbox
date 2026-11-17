@@ -57,6 +57,7 @@ type HTTP struct {
 	client    *http.Client
 	rec       *pipeline
 	exchanges atomic.Uint64 // numbers each request/response exchange for correlation
+	maxBody   int           // largest request body forwarded
 }
 
 // NewHTTP builds an HTTP proxy.
@@ -83,6 +84,7 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 				ResponseHeaderTimeout: 0, // tools may be slow; the caller controls the deadline
 			},
 		},
+		maxBody: DefaultMaxFrame,
 		rec: newPipeline(pipelineConfig{
 			SessionID: o.SessionID,
 			Sink:      o.Sink,
@@ -101,12 +103,17 @@ func NewHTTP(o HTTPOptions) (*HTTP, error) {
 
 // ServeHTTP proxies one request to the upstream MCP server.
 func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	// One byte past the limit tells an oversized body from one that fits exactly.
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(h.maxBody)+1))
 	if err != nil {
 		http.Error(w, "blackbox: reading request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	_ = r.Body.Close()
+	if len(body) > h.maxBody {
+		h.refuseOversized(w, body)
+		return
+	}
 	body = bytes.TrimSpace(body)
 
 	// The routing headers are recorded as authoritative and forwarded upstream, while
@@ -202,6 +209,20 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.rec.record(event.ServerToClient, trimmed, respHint, nil, false)
 	}
 	_, _ = w.Write(respBody)
+}
+
+// refuseOversized answers 413 to a body larger than the limit. Forwarding the part
+// that was read would hand the server bytes the client never sent as a whole, and the
+// gate cannot judge a message it does not hold, so nothing is forwarded either way.
+// Under a policy the refusal is recorded as a denial, like an oversized stdio frame.
+func (h *HTTP) refuseOversized(w http.ResponseWriter, head []byte) {
+	reason := fmt.Sprintf("request body of more than %d bytes refused, not forwarded", h.maxBody)
+	var dec *policy.Decision
+	if h.rec.policy != nil {
+		dec = &policy.Decision{Action: policy.Deny, Mode: policy.ModeEnforce, Rule: -1, Reason: reason}
+	}
+	h.rec.recordOversize(event.ClientToServer, head, len(head), reason, dec)
+	http.Error(w, "blackbox: "+reason, http.StatusRequestEntityTooLarge)
 }
 
 // routeMismatch reports when the Mcp-Method / Mcp-Name headers name a different
