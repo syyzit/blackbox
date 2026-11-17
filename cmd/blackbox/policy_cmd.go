@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/syyzit/blackbox/internal/event"
 	"github.com/syyzit/blackbox/internal/policy"
 	"github.com/syyzit/blackbox/internal/store"
 )
@@ -41,7 +42,7 @@ func cmdPolicy(args []string) int {
 		return 1
 	}
 
-	sum := policy.EvaluateSession(pol, strings.Join(meta.Argv, " "), events)
+	sum := simulatePolicy(pol, meta, events)
 	fmt.Printf("session  %s\n", meta.ID)
 	fmt.Printf("calls    %d\n", sum.Total)
 	fmt.Printf("result   allow %d · deny %d · require approval %d\n\n",
@@ -73,4 +74,14 @@ func cmdPolicy(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// simulatePolicy evaluates a recorded session the way the live gate saw it. A proxied
+// session holds MCP params and is matched by its server command; a built-in session
+// holds bare tool inputs and `blackbox check` matches it by the source's name.
+func simulatePolicy(pol *policy.Policy, meta store.Meta, events []event.Event) policy.ImpactSummary {
+	if src, ok := store.SourceOfSession(meta.ID); ok {
+		return policy.EvaluateExternalSession(pol, src.Name, events)
+	}
+	return policy.EvaluateSession(pol, strings.Join(meta.Argv, " "), events)
 }

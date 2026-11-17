@@ -251,10 +251,13 @@ A rule matches when all of its conditions hold:
 - `server` and `tool` are globs (`*`, `?`) over the server command and the tool name.
 - `match` maps a path into the tool's arguments to a glob over its value. Paths are
   dotted (`options.mode`, `args.0`), and `*` stands for any element or key, matching
-  if any value it reaches matches. Numbers and booleans compare as written.
+  if any value it reaches matches. Numbers and booleans compare as written. `*` and
+  `?` also match line breaks, so `*rm -rf*` catches a multi-line command.
 - `paths` works like `match` for file paths: backslashes become `/` and the path is
-  cleaned first, so `/tmp/../etc/passwd` is checked as `/etc/passwd`. Matching is
-  case-sensitive, so on Windows write the casing the agent uses.
+  cleaned first, so `/tmp/../etc/passwd` is checked as `/etc/passwd`. The pattern is
+  normalised the same way, so `C:\Users\me\.ssh\*` and `C:/Users/me/.ssh/*` are the
+  same rule and a trailing slash is ignored. Matching is case-sensitive, so on Windows
+  write the casing the agent uses.
 - `args` is a regex over the whole JSON `params`. It's useful for one-off patterns,
   but `match` and `paths` are harder to get wrong.
 
@@ -395,7 +398,9 @@ DECISION  TOOL  RECORDED    ARGS
 deny      fail  tool_error  {"name":"fail","arguments":{}}
 ```
 
-Add `--fail-on-deny` to make it a CI gate.
+Add `--fail-on-deny` to make it a CI gate. Sessions of built-in tools (`oc-…`, `cc-…`)
+are evaluated the way `blackbox check` evaluates them: against the tool's input, with
+the source name (`opencode`, `claude-code`) as the server.
 
 ## Coverage: what the recording might have missed
 

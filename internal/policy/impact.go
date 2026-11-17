@@ -1,6 +1,10 @@
 package policy
 
-import "github.com/syyzit/blackbox/internal/event"
+import (
+	"encoding/json"
+
+	"github.com/syyzit/blackbox/internal/event"
+)
 
 // Impact is what a candidate policy would have done to one recorded call.
 type Impact struct {
@@ -28,6 +32,18 @@ type ImpactSummary struct {
 // live gate would have made the decision. The recorded status is the final outcome of
 // the call, so you can see what a rule would have prevented.
 func EvaluateSession(p *Policy, server string, events []event.Event) ImpactSummary {
+	return evaluateSession(p, server, events, false)
+}
+
+// EvaluateExternalSession does the same for a session recorded outside the proxy (an
+// editor plugin or an agent's hooks). Those events store the tool's input as Args, not
+// MCP params, and that input is what the live check gave the policy; reading it as
+// params would hide it from every match and paths rule.
+func EvaluateExternalSession(p *Policy, server string, events []event.Event) ImpactSummary {
+	return evaluateSession(p, server, events, true)
+}
+
+func evaluateSession(p *Policy, server string, events []event.Event, bareInput bool) ImpactSummary {
 	finalStatus := map[string]string{}
 	for _, e := range events {
 		if e.Direction != event.ServerToClient || e.Status == "" || e.Status == event.StatusPending {
@@ -55,7 +71,11 @@ func EvaluateSession(p *Policy, server string, events []event.Event) ImpactSumma
 		}
 		seen[key] = true
 
-		dec := p.Decide(Request{Server: server, Tool: e.Tool, Args: e.Args})
+		req := Request{Server: server, Tool: e.Tool, Args: e.Args}
+		if bareInput {
+			req.Arguments = json.RawMessage(e.Args)
+		}
+		dec := p.Decide(req)
 		sum.Total++
 		switch dec.Action {
 		case Allow:
