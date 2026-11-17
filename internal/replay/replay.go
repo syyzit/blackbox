@@ -57,6 +57,11 @@ func New(events []event.Event) *Engine {
 		notifications: map[int][][]byte{},
 	}
 
+	// JSON-RPC ids and call ids are unique per MCP connection only. A merged trace
+	// holds several sessions that each count from 1, so both are scoped by session,
+	// as in Diff.
+	scoped := func(ev event.Event, id string) string { return ev.SessionID + "\x00" + id }
+
 	index := map[string]int{}
 	lastIdx := -1
 	for _, ev := range events {
@@ -67,8 +72,9 @@ func New(events []event.Event) *Engine {
 			if callID == "" {
 				callID = "call-" + ev.ID
 			}
+			callID = scoped(ev, callID)
 			e.exchanges = append(e.exchanges, Exchange{Request: ev})
-			index[ev.ID] = idx
+			index[scoped(ev, ev.ID)] = idx
 			e.groups[callID] = append(e.groups[callID], idx)
 			key := ev.Method + "\x00" + ev.Tool
 			e.groupsByKey[key] = append(e.groupsByKey[key], callID)
@@ -84,9 +90,9 @@ func New(events []event.Event) *Engine {
 			}
 
 		case ev.Direction == event.ServerToClient && ev.ID != "":
-			if i, ok := index[ev.ID]; ok {
+			if i, ok := index[scoped(ev, ev.ID)]; ok {
 				e.exchanges[i].Response = ev
-				delete(index, ev.ID)
+				delete(index, scoped(ev, ev.ID))
 			}
 		}
 	}
